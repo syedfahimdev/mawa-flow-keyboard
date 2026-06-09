@@ -1,22 +1,41 @@
 import UIKit
 
+private final class MawaKeyButton: UIButton {
+    var keyValue: String = ""
+    var specialAction: String = ""
+}
+
 final class KeyboardViewController: UIInputViewController {
-    private let modes: [MawaMode] = [.auto, .dictate, .reply, .prompt, .rewrite]
-    private var selectedMode: MawaMode = .auto
-    private var draft: String = MawaFlowEngine.defaultDraft
-    private var previewText: String = "Tap Mawa to generate a local Phase 1 preview."
-    private var variant: Int = 0
+    private enum KeyboardPage {
+        case letters
+        case numbers
+    }
 
-    private let previewLabel = UILabel()
-    private let intentLabel = UILabel()
-    private let statusLabel = UILabel()
-    private let mawaButton = UIButton(type: .system)
-    private let modeStack = UIStackView()
-    private let sampleStack = UIStackView()
+    private let modes: [MawaMode] = [.rewrite, .dictate, .reply, .prompt, .ask]
+    private let tones = ["Grammar", "Formal", "Social", "Casual", "Funny", "Polite"]
 
-    private let teal = UIColor(red: 0.02, green: 0.42, blue: 0.35, alpha: 1.0)
-    private let ivory = UIColor(red: 0.98, green: 0.97, blue: 0.93, alpha: 1.0)
-    private let violet = UIColor(red: 0.73, green: 0.58, blue: 1.0, alpha: 1.0)
+    private var selectedMode: MawaMode = .rewrite
+    private var selectedTone = "Casual"
+    private var keyboardPage: KeyboardPage = .letters
+    private var isShiftEnabled = false
+    private var typedBuffer = ""
+    private var previewText = "Tap AI Rephrase to polish nearby text or what you type here."
+    private var variant = 0
+
+    private let rootStack = UIStackView()
+    private let toolbarStack = UIStackView()
+    private let aiPanel = UIStackView()
+    private let toneStack = UIStackView()
+    private let keysStack = UIStackView()
+    private let sourceLabel = UILabel()
+    private let outputLabel = UILabel()
+    private let contextLabel = UILabel()
+
+    private let blue = UIColor(red: 0.04, green: 0.52, blue: 0.96, alpha: 1.0)
+    private let dark = UIColor(red: 0.12, green: 0.12, blue: 0.14, alpha: 1.0)
+    private let keyBackground = UIColor.white.withAlphaComponent(0.94)
+    private let specialBackground = UIColor(red: 0.80, green: 0.82, blue: 0.86, alpha: 1.0)
+    private let keyboardBackground = UIColor(red: 0.86, green: 0.88, blue: 0.91, alpha: 1.0)
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -25,11 +44,12 @@ final class KeyboardViewController: UIInputViewController {
             source: "keyboard",
             details: [
                 "has_full_access": String(hasFullAccess),
-                "needs_input_mode_switch_key": String(needsInputModeSwitchKey)
+                "needs_input_mode_switch_key": String(needsInputModeSwitchKey),
+                "layout": "qwerty_ai_controls_v1"
             ]
         )
         setupKeyboard()
-        generatePreview()
+        refreshAI(copyFromContext: true)
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -42,153 +62,253 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func setupKeyboard() {
-        view.backgroundColor = ivory
-        view.heightAnchor.constraint(greaterThanOrEqualToConstant: 310).isActive = true
+        view.backgroundColor = keyboardBackground
+        view.heightAnchor.constraint(greaterThanOrEqualToConstant: 372).isActive = true
 
-        let root = UIStackView()
-        root.axis = .vertical
-        root.spacing = 10
-        root.translatesAutoresizingMaskIntoConstraints = false
-        root.layoutMargins = UIEdgeInsets(top: 10, left: 10, bottom: 8, right: 10)
-        root.isLayoutMarginsRelativeArrangement = true
-        view.addSubview(root)
+        rootStack.axis = .vertical
+        rootStack.spacing = 6
+        rootStack.translatesAutoresizingMaskIntoConstraints = false
+        rootStack.layoutMargins = UIEdgeInsets(top: 8, left: 6, bottom: 6, right: 6)
+        rootStack.isLayoutMarginsRelativeArrangement = true
+        view.addSubview(rootStack)
 
         NSLayoutConstraint.activate([
-            root.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            root.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            root.topAnchor.constraint(equalTo: view.topAnchor),
-            root.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            rootStack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            rootStack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            rootStack.topAnchor.constraint(equalTo: view.topAnchor),
+            rootStack.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
 
-        let header = UIStackView()
-        header.axis = .horizontal
-        header.spacing = 8
-        header.alignment = .center
+        buildToolbar()
+        buildAIPanel()
+        rebuildKeyboardRows()
+    }
+
+    private func buildToolbar() {
+        toolbarStack.axis = .horizontal
+        toolbarStack.spacing = 6
+        toolbarStack.alignment = .fill
+        toolbarStack.distribution = .fillProportionally
+        rootStack.addArrangedSubview(toolbarStack)
+
+        let menu = toolbarButton("☷", action: "ai", highlighted: false)
+        menu.setTitleColor(.darkGray, for: .normal)
+        menu.widthAnchor.constraint(equalToConstant: 42).isActive = true
+        toolbarStack.addArrangedSubview(menu)
+
+        let rephrase = toolbarButton("✦ AI Rephrase", action: "ai", highlighted: true)
+        toolbarStack.addArrangedSubview(rephrase)
+
+        let translate = toolbarButton("◎ Translate", action: "translate", highlighted: false)
+        toolbarStack.addArrangedSubview(translate)
+
+        let undo = toolbarButton("↶", action: "delete", highlighted: false)
+        undo.widthAnchor.constraint(equalToConstant: 42).isActive = true
+        toolbarStack.addArrangedSubview(undo)
+
+        let mic = toolbarButton("●", action: "mic", highlighted: false)
+        mic.widthAnchor.constraint(equalToConstant: 42).isActive = true
+        toolbarStack.addArrangedSubview(mic)
+    }
+
+    private func buildAIPanel() {
+        aiPanel.axis = .vertical
+        aiPanel.spacing = 7
+        aiPanel.layoutMargins = UIEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+        aiPanel.isLayoutMarginsRelativeArrangement = true
+        aiPanel.backgroundColor = UIColor(red: 0.16, green: 0.16, blue: 0.18, alpha: 1.0)
+        aiPanel.layer.cornerRadius = 14
+        rootStack.addArrangedSubview(aiPanel)
+
+        let topLine = UIStackView()
+        topLine.axis = .horizontal
+        topLine.alignment = .center
+        topLine.spacing = 6
 
         let title = UILabel()
-        title.text = "Mawa Flow"
-        title.font = .systemFont(ofSize: 15, weight: .bold)
-        title.textColor = teal
-        header.addArrangedSubview(title)
+        title.text = "Source Text"
+        title.font = .systemFont(ofSize: 12, weight: .semibold)
+        title.textColor = UIColor.white.withAlphaComponent(0.62)
+        topLine.addArrangedSubview(title)
 
-        statusLabel.text = "Local demo"
-        statusLabel.font = .systemFont(ofSize: 11, weight: .semibold)
-        statusLabel.textColor = .secondaryLabel
-        statusLabel.textAlignment = .right
-        header.addArrangedSubview(statusLabel)
-        root.addArrangedSubview(header)
+        contextLabel.text = "Cursor/local"
+        contextLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        contextLabel.textAlignment = .right
+        contextLabel.textColor = UIColor.white.withAlphaComponent(0.48)
+        topLine.addArrangedSubview(contextLabel)
+        aiPanel.addArrangedSubview(topLine)
 
-        modeStack.axis = .horizontal
-        modeStack.spacing = 6
-        modeStack.distribution = .fillEqually
-        root.addArrangedSubview(modeStack)
-        rebuildModeButtons()
+        sourceLabel.numberOfLines = 2
+        sourceLabel.font = .systemFont(ofSize: 14, weight: .medium)
+        sourceLabel.textColor = .white
+        sourceLabel.backgroundColor = UIColor(red: 0.10, green: 0.10, blue: 0.11, alpha: 1.0)
+        sourceLabel.layer.cornerRadius = 10
+        sourceLabel.layer.masksToBounds = true
+        aiPanel.addArrangedSubview(padded(sourceLabel, inset: 9, background: UIColor(red: 0.10, green: 0.10, blue: 0.11, alpha: 1.0), cornerRadius: 10, minHeight: 46))
 
-        previewLabel.text = previewText
-        previewLabel.font = .systemFont(ofSize: 15, weight: .regular)
-        previewLabel.textColor = .label
-        previewLabel.numberOfLines = 4
-        previewLabel.lineBreakMode = .byTruncatingTail
-        previewLabel.backgroundColor = .white
-        previewLabel.layer.cornerRadius = 18
-        previewLabel.layer.masksToBounds = true
-        previewLabel.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
-        root.addArrangedSubview(wrapWithPadding(previewLabel, inset: 14, background: .white, cornerRadius: 18))
+        toneStack.axis = .horizontal
+        toneStack.spacing = 5
+        toneStack.distribution = .fillEqually
+        aiPanel.addArrangedSubview(toneStack)
+        rebuildToneButtons()
 
-        intentLabel.text = "Intent: Auto • Context: none"
-        intentLabel.font = .systemFont(ofSize: 12, weight: .medium)
-        intentLabel.textColor = .secondaryLabel
-        root.addArrangedSubview(intentLabel)
+        let outputRow = UIStackView()
+        outputRow.axis = .horizontal
+        outputRow.spacing = 8
+        outputRow.alignment = .fill
 
-        sampleStack.axis = .horizontal
-        sampleStack.spacing = 6
-        sampleStack.distribution = .fillEqually
-        root.addArrangedSubview(sampleStack)
-        rebuildSampleButtons()
+        outputLabel.numberOfLines = 3
+        outputLabel.font = .systemFont(ofSize: 14, weight: .regular)
+        outputLabel.textColor = .white
+        outputLabel.backgroundColor = UIColor(red: 0.22, green: 0.22, blue: 0.24, alpha: 1.0)
+        outputLabel.layer.cornerRadius = 12
+        outputLabel.layer.masksToBounds = true
+        outputRow.addArrangedSubview(padded(outputLabel, inset: 10, background: UIColor(red: 0.22, green: 0.22, blue: 0.24, alpha: 1.0), cornerRadius: 12, minHeight: 52))
 
-        let actionRow = UIStackView()
-        actionRow.axis = .horizontal
-        actionRow.spacing = 8
-        actionRow.distribution = .fillProportionally
-
-        let nextKeyboard = smallButton("🌐")
-        nextKeyboard.addTarget(self, action: #selector(handleNextKeyboard), for: .touchUpInside)
-        actionRow.addArrangedSubview(nextKeyboard)
-
-        let clearButton = smallButton("Clear")
-        clearButton.addTarget(self, action: #selector(handleClear), for: .touchUpInside)
-        actionRow.addArrangedSubview(clearButton)
-
-        mawaButton.setTitle("Hold Mawa / Generate", for: .normal)
-        mawaButton.setTitleColor(.white, for: .normal)
-        mawaButton.titleLabel?.font = .systemFont(ofSize: 16, weight: .bold)
-        mawaButton.backgroundColor = teal
-        mawaButton.layer.cornerRadius = 18
-        mawaButton.contentEdgeInsets = UIEdgeInsets(top: 12, left: 16, bottom: 12, right: 16)
-        mawaButton.addTarget(self, action: #selector(handleGenerate), for: .touchUpInside)
-        actionRow.addArrangedSubview(mawaButton)
-
-        let insertButton = smallButton("Insert")
-        insertButton.backgroundColor = violet.withAlphaComponent(0.35)
-        insertButton.addTarget(self, action: #selector(handleInsert), for: .touchUpInside)
-        actionRow.addArrangedSubview(insertButton)
-
-        root.addArrangedSubview(actionRow)
-
-        let transformRow = UIStackView()
-        transformRow.axis = .horizontal
-        transformRow.spacing = 8
-        transformRow.distribution = .fillEqually
-
-        let shorter = smallButton("Shorter")
-        shorter.addTarget(self, action: #selector(handleShorter), for: .touchUpInside)
-        transformRow.addArrangedSubview(shorter)
-
-        let warmer = smallButton("Warmer")
-        warmer.addTarget(self, action: #selector(handleWarmer), for: .touchUpInside)
-        transformRow.addArrangedSubview(warmer)
-
-        let redo = smallButton("Regenerate")
-        redo.addTarget(self, action: #selector(handleGenerate), for: .touchUpInside)
-        transformRow.addArrangedSubview(redo)
-
-        root.addArrangedSubview(transformRow)
+        let insert = compactActionButton("Insert", action: "insert_ai")
+        insert.widthAnchor.constraint(equalToConstant: 72).isActive = true
+        outputRow.addArrangedSubview(insert)
+        aiPanel.addArrangedSubview(outputRow)
     }
 
-    private func rebuildModeButtons() {
-        modeStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for mode in modes {
-            let button = smallButton(mode.shortLabel)
-            button.backgroundColor = mode == selectedMode ? teal : .white
-            button.setTitleColor(mode == selectedMode ? .white : teal, for: .normal)
-            button.tag = modes.firstIndex(of: mode) ?? 0
-            button.addTarget(self, action: #selector(handleMode(_:)), for: .touchUpInside)
-            modeStack.addArrangedSubview(button)
+    private func rebuildToneButtons() {
+        toneStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for tone in tones {
+            let button = compactActionButton(tone, action: "tone")
+            button.keyValue = tone
+            if tone == selectedTone {
+                button.backgroundColor = blue
+                button.setTitleColor(.white, for: .normal)
+            }
+            toneStack.addArrangedSubview(button)
         }
     }
 
-    private func rebuildSampleButtons() {
-        sampleStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for (index, sample) in MawaFlowEngine.demoSamples.prefix(3).enumerated() {
-            let button = smallButton(sample.title)
-            button.tag = index
-            button.addTarget(self, action: #selector(handleSample(_:)), for: .touchUpInside)
-            sampleStack.addArrangedSubview(button)
+    private func rebuildKeyboardRows() {
+        keysStack.removeFromSuperview()
+        keysStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        keysStack.axis = .vertical
+        keysStack.spacing = 6
+        rootStack.addArrangedSubview(keysStack)
+
+        switch keyboardPage {
+        case .letters:
+            addKeyRow(Array("qwertyuiop").map(String.init))
+            addKeyRow(Array("asdfghjkl").map(String.init), sideInset: 18)
+            addKeyRow(Array("zxcvbnm").map(String.init), leadingSpecial: (isShiftEnabled ? "⇧" : "⇧", "shift"), trailingSpecial: ("⌫", "delete"))
+            addBottomRow(pageTitle: "123")
+        case .numbers:
+            addKeyRow(["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"])
+            addKeyRow(["-", "/", ":", ";", "(", ")", "$", "&", "@", "\""])
+            addKeyRow([".", ",", "?", "!", "'"], leadingSpecial: ("#+=", "symbols"), trailingSpecial: ("⌫", "delete"))
+            addBottomRow(pageTitle: "ABC")
         }
     }
 
-    private func smallButton(_ title: String) -> UIButton {
-        let button = UIButton(type: .system)
+    private func addKeyRow(_ keys: [String], sideInset: CGFloat = 0, leadingSpecial: (String, String)? = nil, trailingSpecial: (String, String)? = nil) {
+        let outer = UIStackView()
+        outer.axis = .horizontal
+        outer.spacing = 5
+        outer.alignment = .fill
+        outer.distribution = .fill
+
+        if sideInset > 0 {
+            outer.addArrangedSubview(spacer(width: sideInset))
+        }
+        if let leadingSpecial {
+            let button = keyButton(leadingSpecial.0, specialAction: leadingSpecial.1, isSpecial: true)
+            button.widthAnchor.constraint(equalToConstant: 44).isActive = true
+            outer.addArrangedSubview(button)
+        }
+        for key in keys {
+            let title = keyboardPage == .letters && isShiftEnabled ? key.uppercased() : key
+            outer.addArrangedSubview(keyButton(title, value: title))
+        }
+        if let trailingSpecial {
+            let button = keyButton(trailingSpecial.0, specialAction: trailingSpecial.1, isSpecial: true)
+            button.widthAnchor.constraint(equalToConstant: 44).isActive = true
+            outer.addArrangedSubview(button)
+        }
+        if sideInset > 0 {
+            outer.addArrangedSubview(spacer(width: sideInset))
+        }
+        keysStack.addArrangedSubview(outer)
+    }
+
+    private func addBottomRow(pageTitle: String) {
+        let row = UIStackView()
+        row.axis = .horizontal
+        row.spacing = 5
+        row.alignment = .fill
+
+        let page = keyButton(pageTitle, specialAction: "page", isSpecial: true)
+        page.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        row.addArrangedSubview(page)
+
+        let globe = keyButton("🌐", specialAction: "globe", isSpecial: true)
+        globe.widthAnchor.constraint(equalToConstant: 42).isActive = true
+        row.addArrangedSubview(globe)
+
+        let space = keyButton("Mawa Flow", specialAction: "space", isSpecial: false)
+        space.titleLabel?.font = .systemFont(ofSize: 13, weight: .medium)
+        row.addArrangedSubview(space)
+
+        let returnKey = keyButton("return", specialAction: "return", isSpecial: true)
+        returnKey.widthAnchor.constraint(equalToConstant: 66).isActive = true
+        row.addArrangedSubview(returnKey)
+
+        let mic = keyButton("🎙", specialAction: "mic", isSpecial: true)
+        mic.widthAnchor.constraint(equalToConstant: 42).isActive = true
+        row.addArrangedSubview(mic)
+
+        keysStack.addArrangedSubview(row)
+    }
+
+    private func toolbarButton(_ title: String, action: String, highlighted: Bool) -> MawaKeyButton {
+        let button = MawaKeyButton(type: .system)
+        button.specialAction = action
         button.setTitle(title, for: .normal)
-        button.titleLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
-        button.setTitleColor(teal, for: .normal)
-        button.backgroundColor = .white
-        button.layer.cornerRadius = 14
+        button.setTitleColor(highlighted ? .white : UIColor.white.withAlphaComponent(0.88), for: .normal)
+        button.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
+        button.backgroundColor = highlighted ? blue : dark.withAlphaComponent(0.92)
+        button.layer.cornerRadius = 12
         button.contentEdgeInsets = UIEdgeInsets(top: 9, left: 10, bottom: 9, right: 10)
+        button.addTarget(self, action: #selector(handleButton(_:)), for: .touchUpInside)
         return button
     }
 
-    private func wrapWithPadding(_ label: UILabel, inset: CGFloat, background: UIColor, cornerRadius: CGFloat) -> UIView {
+    private func compactActionButton(_ title: String, action: String) -> MawaKeyButton {
+        let button = MawaKeyButton(type: .system)
+        button.specialAction = action
+        button.setTitle(title, for: .normal)
+        button.setTitleColor(blue, for: .normal)
+        button.titleLabel?.font = .systemFont(ofSize: 11, weight: .semibold)
+        button.backgroundColor = UIColor(red: 0.20, green: 0.22, blue: 0.25, alpha: 1.0)
+        button.layer.cornerRadius = 10
+        button.contentEdgeInsets = UIEdgeInsets(top: 8, left: 6, bottom: 8, right: 6)
+        button.addTarget(self, action: #selector(handleButton(_:)), for: .touchUpInside)
+        return button
+    }
+
+    private func keyButton(_ title: String, value: String = "", specialAction: String = "", isSpecial: Bool = false) -> MawaKeyButton {
+        let button = MawaKeyButton(type: .system)
+        button.keyValue = value
+        button.specialAction = specialAction
+        button.setTitle(title, for: .normal)
+        button.setTitleColor(.black, for: .normal)
+        button.titleLabel?.font = .systemFont(ofSize: 18, weight: .regular)
+        button.backgroundColor = isSpecial ? specialBackground : keyBackground
+        button.layer.cornerRadius = 6
+        button.layer.shadowColor = UIColor.black.cgColor
+        button.layer.shadowOpacity = 0.16
+        button.layer.shadowRadius = 0
+        button.layer.shadowOffset = CGSize(width: 0, height: 1)
+        button.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        button.addTarget(self, action: #selector(handleButton(_:)), for: .touchUpInside)
+        return button
+    }
+
+    private func padded(_ label: UILabel, inset: CGFloat, background: UIColor, cornerRadius: CGFloat, minHeight: CGFloat) -> UIView {
         let container = UIView()
         container.backgroundColor = background
         container.layer.cornerRadius = cornerRadius
@@ -199,61 +319,124 @@ final class KeyboardViewController: UIInputViewController {
             label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -inset),
             label.topAnchor.constraint(equalTo: container.topAnchor, constant: inset),
             label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -inset),
-            container.heightAnchor.constraint(greaterThanOrEqualToConstant: 92)
+            container.heightAnchor.constraint(greaterThanOrEqualToConstant: minHeight)
         ])
         return container
     }
 
-    private func generatePreview() {
-        let result = MawaFlowEngine.generate(draft: draft, requestedMode: selectedMode, variant: variant)
-        previewText = result.output
-        previewLabel.text = result.output
-        intentLabel.text = "Intent: \(result.intentLabel) • Context: none"
-        statusLabel.text = result.privacyLabel
-        variant += 1
+    private func spacer(width: CGFloat) -> UIView {
+        let view = UIView()
+        view.widthAnchor.constraint(equalToConstant: width).isActive = true
+        return view
     }
 
-    @objc private func handleMode(_ sender: UIButton) {
-        selectedMode = modes[sender.tag]
-        rebuildModeButtons()
-        generatePreview()
+    @objc private func handleButton(_ sender: MawaKeyButton) {
+        switch sender.specialAction {
+        case "delete":
+            textDocumentProxy.deleteBackward()
+            if !typedBuffer.isEmpty { typedBuffer.removeLast() }
+            refreshAI(copyFromContext: false)
+        case "shift":
+            isShiftEnabled.toggle()
+            rebuildKeyboardRows()
+        case "page", "symbols":
+            keyboardPage = keyboardPage == .letters ? .numbers : .letters
+            rebuildKeyboardRows()
+        case "space":
+            insertText(" ")
+        case "return":
+            insertText("\n")
+        case "globe":
+            advanceToNextInputMode()
+        case "ai":
+            selectedMode = .rewrite
+            refreshAI(copyFromContext: true)
+            MawaDiagnostics.send(event: "keyboard_ai_rephrase_tapped", source: "keyboard")
+        case "translate":
+            selectedMode = .ask
+            selectedTone = "Translate"
+            refreshAI(copyFromContext: true)
+            MawaDiagnostics.send(event: "keyboard_translate_tapped", source: "keyboard")
+        case "tone":
+            selectedTone = sender.keyValue
+            rebuildToneButtons()
+            refreshAI(copyFromContext: false)
+        case "insert_ai":
+            MawaDiagnostics.send(event: "keyboard_ai_insert_tapped", source: "keyboard")
+            textDocumentProxy.insertText(previewText)
+            typedBuffer = ""
+            refreshAI(copyFromContext: true)
+        case "mic":
+            MawaDiagnostics.send(event: "keyboard_mic_placeholder_tapped", source: "keyboard")
+            sourceLabel.text = "Voice mode is next. For now, type normally or tap AI Rephrase."
+            outputLabel.text = "Voice capture coming next — the full keyboard and AI controls are active in this build."
+        default:
+            if !sender.keyValue.isEmpty {
+                insertText(sender.keyValue)
+                if isShiftEnabled && keyboardPage == .letters {
+                    isShiftEnabled = false
+                    rebuildKeyboardRows()
+                }
+            }
+        }
     }
 
-    @objc private func handleSample(_ sender: UIButton) {
-        let sample = Array(MawaFlowEngine.demoSamples.prefix(3))[sender.tag]
-        draft = sample.text
-        selectedMode = sample.mode
-        rebuildModeButtons()
-        generatePreview()
+    private func insertText(_ text: String) {
+        textDocumentProxy.insertText(text)
+        typedBuffer += text
+        if typedBuffer.count > 700 {
+            typedBuffer = String(typedBuffer.suffix(700))
+        }
+        refreshAI(copyFromContext: false)
     }
 
-    @objc private func handleGenerate() {
-        MawaDiagnostics.send(event: "keyboard_generate_tapped", source: "keyboard")
-        generatePreview()
+    private func refreshAI(copyFromContext: Bool) {
+        let source = currentSourceText(copyFromContext: copyFromContext)
+        sourceLabel.text = source.isEmpty ? "Type something, then choose a tone or tap AI Rephrase." : source
+        contextLabel.text = sourceContextLabel()
+
+        if selectedTone == "Translate" {
+            previewText = "Translate mode selected. Next build will choose language; for now, Mawa can rewrite the source clearly."
+        } else {
+            let result = MawaFlowEngine.generate(draft: source, requestedMode: selectedMode, variant: variant)
+            previewText = applyTone(selectedTone, to: result.output)
+            variant += 1
+        }
+        outputLabel.text = previewText
     }
 
-    @objc private func handleInsert() {
-        MawaDiagnostics.send(event: "keyboard_insert_tapped", source: "keyboard")
-        textDocumentProxy.insertText(previewText)
+    private func currentSourceText(copyFromContext: Bool) -> String {
+        if !typedBuffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return typedBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if copyFromContext, let before = textDocumentProxy.documentContextBeforeInput?.trimmingCharacters(in: .whitespacesAndNewlines), !before.isEmpty {
+            return String(before.suffix(240))
+        }
+        return ""
     }
 
-    @objc private func handleClear() {
-        previewText = "Tap Mawa to generate a local Phase 1 preview."
-        previewLabel.text = previewText
-        intentLabel.text = "Intent: none • Context: none"
+    private func sourceContextLabel() -> String {
+        if !typedBuffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Local typing" }
+        if let before = textDocumentProxy.documentContextBeforeInput, !before.isEmpty { return "Cursor context" }
+        return "No text yet"
     }
 
-    @objc private func handleShorter() {
-        previewText = MawaFlowEngine.shorter(previewText)
-        previewLabel.text = previewText
-    }
-
-    @objc private func handleWarmer() {
-        previewText = MawaFlowEngine.warmer(previewText)
-        previewLabel.text = previewText
-    }
-
-    @objc private func handleNextKeyboard() {
-        advanceToNextInputMode()
+    private func applyTone(_ tone: String, to text: String) -> String {
+        switch tone {
+        case "Grammar":
+            return text
+        case "Formal":
+            return text.replacingOccurrences(of: "Hey — ", with: "Hello, ")
+        case "Social":
+            return text + " 🙌"
+        case "Casual":
+            return text
+        case "Funny":
+            return text + " 😄"
+        case "Polite":
+            return text.hasPrefix("Please") ? text : "Please " + text.prefix(1).lowercased() + String(text.dropFirst())
+        default:
+            return text
+        }
     }
 }
