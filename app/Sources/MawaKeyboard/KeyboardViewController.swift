@@ -417,9 +417,17 @@ final class KeyboardViewController: UIInputViewController {
         var step = "session_category"
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.record, mode: .spokenAudio, options: [])
+            // Open-source direct-keyboard attempts (Whispidik / WhisperSource) use
+            // `.record` + `.measurement`. `.spokenAudio` produced OSStatus -50 in
+            // our build 17 device logs at setCategory, so keep the category/mode
+            // pair closest to those examples and let CAF handle the native format.
+            try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
+            step = "preferred_sample_rate"
+            try? session.setPreferredSampleRate(16_000)
+            step = "preferred_channels"
+            try? session.setPreferredInputNumberOfChannels(1)
             step = "session_active"
-            try session.setActive(true, options: [])
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
 
             step = "engine_create"
             let engine = AVAudioEngine()
