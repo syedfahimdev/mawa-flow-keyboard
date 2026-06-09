@@ -10,6 +10,9 @@ permissions:
 
 env:
   IPA_NAME: mawa-flow-keyboard-unsigned.ipa
+  SOURCE_NAME: altstore-source.json
+  INSTALL_PAGE_NAME: install.html
+  APP_VERSION: 0.1.${{ github.run_number }}
 
 jobs:
   build-ios-unsigned:
@@ -45,6 +48,8 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_IDENTITY="" \
             DEVELOPMENT_TEAM="" \
+            MARKETING_VERSION="$APP_VERSION" \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
             clean build
 
       - name: Package unsigned IPA
@@ -64,11 +69,81 @@ jobs:
           cd ..
           ls -lh "$IPA_NAME"
 
+      - name: Generate phone-friendly install source
+        working-directory: .
+        run: |
+          set -euo pipefail
+          IPA_SIZE=$(stat -f%z "$IPA_NAME")
+          RELEASE_BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/latest"
+          DATE_UTC=$(date -u +%Y-%m-%d)
+          export IPA_SIZE DATE_UTC
+          python3 - <<'PY'
+          import json, os
+          repo = os.environ['GITHUB_REPOSITORY']
+          version = os.environ['APP_VERSION']
+          run_number = os.environ['GITHUB_RUN_NUMBER']
+          sha = os.environ['GITHUB_SHA']
+          ipa_name = os.environ['IPA_NAME']
+          source_name = os.environ['SOURCE_NAME']
+          install_page = os.environ['INSTALL_PAGE_NAME']
+          ipa_size = int(os.environ['IPA_SIZE'])
+          release_base = f"https://github.com/{repo}/releases/download/latest"
+          source_url = f"{release_base}/{source_name}"
+          ipa_url = f"{release_base}/{ipa_name}"
+          icon = "https://raw.githubusercontent.com/syedfahimdev/mawa-flow-keyboard/main/assets/mawa-flow-icon.png"
+          source = {
+              "name": "Mawa Flow Keyboard",
+              "identifier": "com.mawa.flow.source",
+              "subtitle": "Unsigned iOS builds for on-device signing",
+              "description": "Latest Mawa Flow Keyboard builds. Download/sign the IPA with your iOS signing app, or add this source if your signer supports AltStore-style sources.",
+              "website": f"https://github.com/{repo}",
+              "apps": [
+                  {
+                      "name": "Mawa Flow",
+                      "bundleIdentifier": "com.mawa.flow",
+                      "developerName": "Mawa",
+                      "subtitle": "AI voice keyboard MVP",
+                      "localizedDescription": "Phase 1 custom keyboard MVP: Mawa branded keyboard, local deterministic previews, and text insertion. Real voice/LLM/context/skills come in later phases.",
+                      "iconURL": icon,
+                      "tintColor": "075E54",
+                      "category": "productivity",
+                      "versions": [
+                          {
+                              "version": version,
+                              "buildVersion": run_number,
+                              "date": os.environ['DATE_UTC'],
+                              "downloadURL": ipa_url,
+                              "localizedDescription": f"Automated unsigned build from {sha[:7]}. Sign on-device and install over the existing app to update.",
+                              "size": ipa_size,
+                          }
+                      ],
+                  }
+              ],
+          }
+          with open(source_name, 'w') as f:
+              json.dump(source, f, indent=2)
+          html = f"""<!doctype html>
+          <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
+          <title>Mawa Flow Keyboard Install</title>
+          <style>body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#faf7ef;color:#101114;margin:0;padding:28px}}.card{{max-width:680px;margin:auto;background:white;border-radius:28px;padding:24px;box-shadow:0 18px 60px #0001}}a.button{{display:block;text-align:center;background:#075e54;color:white;padding:16px 18px;border-radius:16px;text-decoration:none;font-weight:700;margin:12px 0}}code{{background:#f3f1ea;padding:2px 6px;border-radius:8px}}.muted{{color:#666}}</style></head>
+          <body><main class='card'><h1>Mawa Flow Keyboard</h1><p>Version <b>{version}</b> unsigned IPA is ready.</p>
+          <a class='button' href='{ipa_url}'>Download unsigned IPA</a>
+          <a class='button' href='{source_url}'>Download AltStore-style source JSON</a>
+          <p class='muted'>Open the IPA in your on-device signing app, sign with the same certificate/profile, then install over the existing app to update.</p>
+          <p>Bundle IDs: <code>com.mawa.flow</code> and <code>com.mawa.flow.keyboard</code>.</p>
+          <p class='muted'>Commit: {sha}</p></main></body></html>"""
+          with open(install_page, 'w') as f:
+              f.write(html)
+          PY
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: mawa-flow-keyboard-unsigned-ipa
-          path: ${{ env.IPA_NAME }}
+          path: |
+            ${{ env.IPA_NAME }}
+            ${{ env.SOURCE_NAME }}
+            ${{ env.INSTALL_PAGE_NAME }}
           if-no-files-found: error
           retention-days: 30
 
@@ -90,4 +165,4 @@ jobs:
               --title "Mawa Flow Latest Unsigned IPA" \
               --notes "Automated unsigned iOS build. Download the IPA, sign it on-device with your certificate/provisioning profile, then install over the existing app to update."
           fi
-          gh release upload latest "$IPA_NAME" --clobber
+          gh release upload latest "$IPA_NAME" "$SOURCE_NAME" "$INSTALL_PAGE_NAME" --clobber
