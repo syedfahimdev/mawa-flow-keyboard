@@ -97,12 +97,14 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        hasDictationKey = true
         MawaDiagnostics.send(
             event: "keyboard_view_did_load",
             source: "keyboard",
             details: [
                 "has_full_access": String(hasFullAccess),
                 "needs_input_mode_switch_key": String(needsInputModeSwitchKey),
+                "has_dictation_key": String(hasDictationKey),
                 "layout": "voice_mic_wave_v1"
             ]
         )
@@ -417,11 +419,11 @@ final class KeyboardViewController: UIInputViewController {
         var step = "session_category"
         do {
             let session = AVAudioSession.sharedInstance()
-            // Open-source direct-keyboard attempts (Whispidik / WhisperSource) use
-            // `.record` + `.measurement`. `.spokenAudio` produced OSStatus -50 in
-            // our build 17 device logs at setCategory, so keep the category/mode
-            // pair closest to those examples and let CAF handle the native format.
-            try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
+            // User-provided background/voice-keyboard pattern: playAndRecord +
+            // measurement with bluetooth/mix options. Build 18 got past category
+            // setup but failed at engine_start using `.record`, so this tests
+            // whether iOS needs the broader playAndRecord route for extension mic.
+            try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers])
             step = "preferred_sample_rate"
             try? session.setPreferredSampleRate(16_000)
             step = "preferred_channels"
