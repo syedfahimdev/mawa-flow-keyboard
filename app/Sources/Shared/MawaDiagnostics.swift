@@ -35,7 +35,16 @@ enum MawaDiagnostics {
             let audioData = try Data(contentsOf: fileURL)
             var request = URLRequest(url: transcribeEndpoint)
             request.httpMethod = "POST"
-            request.setValue("audio/mp4", forHTTPHeaderField: "Content-Type")
+            let ext = fileURL.pathExtension.lowercased()
+            let contentType: String
+            switch ext {
+            case "wav": contentType = "audio/wav"
+            case "caf": contentType = "audio/x-caf"
+            case "mp3": contentType = "audio/mpeg"
+            case "m4a", "mp4": contentType = "audio/mp4"
+            default: contentType = "application/octet-stream"
+            }
+            request.setValue(contentType, forHTTPHeaderField: "Content-Type")
             request.setValue(mode, forHTTPHeaderField: "X-Mawa-Mode")
             request.httpBody = audioData
             request.timeoutInterval = 45

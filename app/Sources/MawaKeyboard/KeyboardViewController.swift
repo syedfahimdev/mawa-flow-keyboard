@@ -75,7 +75,10 @@ final class KeyboardViewController: UIInputViewController {
     private var generatedText = ""
     private var currentTranscript = ""
     private var audioRecorder: AVAudioRecorder?
+    private var audioEngine: AVAudioEngine?
+    private var audioFile: AVAudioFile?
     private var recordingURL: URL?
+    private var recordingBackend = "none"
 
     private let rootStack = UIStackView()
     private let modeStack = UIStackView()
@@ -375,45 +378,111 @@ final class KeyboardViewController: UIInputViewController {
                     self.previewLabel.text = "Open the main Mawa app and allow microphone permission, then try again."
                     return
                 }
-                do {
-                    let session = AVAudioSession.sharedInstance()
-                    try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.duckOthers])
-                    try session.setActive(true)
 
-                    let url = FileManager.default.temporaryDirectory.appendingPathComponent("mawa-voice-\(UUID().uuidString).m4a")
-                    let settings: [String: Any] = [
-                        AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-                        AVSampleRateKey: 16_000,
-                        AVNumberOfChannelsKey: 1,
-                        AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-                    ]
-                    let recorder = try AVAudioRecorder(url: url, settings: settings)
-                    recorder.isMeteringEnabled = true
-                    recorder.prepareToRecord()
-                    if recorder.record() {
-                        self.recordingURL = url
-                        self.audioRecorder = recorder
-                        MawaDiagnostics.send(event: "keyboard_recording_started", source: "keyboard", details: ["mode": self.selectedMode.rawValue])
+                do {
+                    try self.startAudioEngineRecording()
+                    MawaDiagnostics.send(
+                        event: "keyboard_recording_started",
+                        source: "keyboard",
+                        details: ["mode": self.selectedMode.rawValue, "backend": self.recordingBackend]
+                    )
+                    self.updateState(.listening)
+                } catch {
+                    MawaDiagnostics.send(
+                        event: "keyboard_audio_engine_failed",
+                        source: "keyboard",
+                        details: ["mode": self.selectedMode.rawValue, "error": error.localizedDescription]
+                    )
+                    do {
+                        try self.startAVRecorderFallback()
+                        MawaDiagnostics.send(
+                            event: "keyboard_recording_started",
+                            source: "keyboard",
+                            details: ["mode": self.selectedMode.rawValue, "backend": self.recordingBackend]
+                        )
                         self.updateState(.listening)
-                    } else {
-                        self.MawaDiagnosticsSendMicError("record_returned_false")
+                    } catch {
+                        self.MawaDiagnosticsSendMicError(error.localizedDescription)
                         self.statusLabel.text = "Keyboard mic blocked"
                         self.transcriptLabel.text = "iOS did not start recording"
-                        self.previewLabel.text = "Full Access is on and mic permission is allowed, but iOS still refused recording from the keyboard extension. Use Open App → Voice Test while we build the host-app handoff."
+                        self.previewLabel.text = "I tried the Wispr-style live audio engine path and the recorder fallback, but iOS/signing still blocked microphone capture in the keyboard. Tap Open App for the reliable recorder while I inspect the new error logs."
                     }
-                } catch {
-                    self.MawaDiagnosticsSendMicError(error.localizedDescription)
-                    self.statusLabel.text = "Mic failed"
-                    self.previewLabel.text = "Recording failed: \(error.localizedDescription)"
                 }
             }
         }
     }
 
+    private func startAudioEngineRecording() throws {
+        cleanupRecordingResources()
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.record, mode: .measurement, options: [])
+        try session.setActive(true, options: [])
+
+        let engine = AVAudioEngine()
+        let inputNode = engine.inputNode
+        let inputFormat = inputNode.outputFormat(forBus: 0)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("mawa-keyboard-engine-\(UUID().uuidString).wav")
+        let file = try AVAudioFile(forWriting: url, settings: inputFormat.settings)
+
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+            do {
+                try file.write(from: buffer)
+            } catch {
+                self?.MawaDiagnosticsSendMicError("audio_file_write_failed: \(error.localizedDescription)")
+            }
+        }
+
+        engine.prepare()
+        try engine.start()
+        guard engine.isRunning else {
+            inputNode.removeTap(onBus: 0)
+            throw NSError(domain: "MawaKeyboardRecording", code: -2, userInfo: [NSLocalizedDescriptionKey: "AVAudioEngine did not start"])
+        }
+
+        audioEngine = engine
+        audioFile = file
+        recordingURL = url
+        recordingBackend = "audio_engine_wav"
+    }
+
+    private func startAVRecorderFallback() throws {
+        cleanupRecordingResources()
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.duckOthers])
+        try session.setActive(true)
+
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("mawa-keyboard-recorder-\(UUID().uuidString).m4a")
+        let settings: [String: Any] = [
+            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+            AVSampleRateKey: 16_000,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+        ]
+        let recorder = try AVAudioRecorder(url: url, settings: settings)
+        recorder.isMeteringEnabled = true
+        recorder.prepareToRecord()
+        guard recorder.record() else {
+            throw NSError(domain: "MawaKeyboardRecording", code: -3, userInfo: [NSLocalizedDescriptionKey: "AVAudioRecorder returned false"])
+        }
+
+        recordingURL = url
+        audioRecorder = recorder
+        recordingBackend = "av_audio_recorder_m4a"
+    }
+
     private func stopRecordingAndTranscribe() {
         audioRecorder?.stop()
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        audioEngine?.stop()
         audioRecorder = nil
-        MawaDiagnostics.send(event: "keyboard_recording_finished", source: "keyboard", details: ["mode": selectedMode.rawValue])
+        audioEngine = nil
+        audioFile = nil
+        try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+        MawaDiagnostics.send(
+            event: "keyboard_recording_finished",
+            source: "keyboard",
+            details: ["mode": selectedMode.rawValue, "backend": recordingBackend]
+        )
         updateState(.processing)
 
         guard let recordingURL else {
@@ -449,8 +518,19 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
+    private func cleanupRecordingResources() {
+        audioRecorder?.stop()
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        audioEngine?.stop()
+        audioRecorder = nil
+        audioEngine = nil
+        audioFile = nil
+        recordingURL = nil
+        recordingBackend = "none"
+    }
+
     private func MawaDiagnosticsSendMicError(_ error: String) {
-        MawaDiagnostics.send(event: "keyboard_recording_failed", source: "keyboard", details: ["mode": selectedMode.rawValue, "error": error])
+        MawaDiagnostics.send(event: "keyboard_recording_failed", source: "keyboard", details: ["mode": selectedMode.rawValue, "backend": recordingBackend, "error": error])
     }
 
     @objc private func handleMicTapped() {
