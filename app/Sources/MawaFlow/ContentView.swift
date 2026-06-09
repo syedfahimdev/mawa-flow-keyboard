@@ -1,12 +1,13 @@
+import AVFoundation
 import SwiftUI
 
 struct ContentView: View {
     var body: some View {
         TabView {
-            OnboardingView()
-                .tabItem { Label("Start", systemImage: "sparkles") }
+            SetupView()
+                .tabItem { Label("Setup", systemImage: "checklist") }
             DemoLabView()
-                .tabItem { Label("Demo", systemImage: "keyboard") }
+                .tabItem { Label("Demo", systemImage: "waveform") }
             DiagnosticsView()
                 .tabItem { Label("Diagnostics", systemImage: "stethoscope") }
             PrivacyView()
@@ -19,24 +20,123 @@ struct ContentView: View {
     }
 }
 
-private struct OnboardingView: View {
+private struct SetupView: View {
+    @AppStorage("mawaProvider") private var provider = "Mawa Cloud"
+    @AppStorage("mawaBYOKey") private var byoKey = ""
+    @AppStorage("mawaLocalMode") private var localMode = false
+    @State private var micStatus = "Not checked"
+    @State private var setupEvent = ""
+
+    private let providers = ["Mawa Cloud", "Bring Your Own Key", "Local / On-device", "Custom Endpoint"]
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     HeroCard()
-                    StepCard(number: "1", title: "Enable the keyboard", body: "Open Settings → General → Keyboard → Keyboards → Add New Keyboard → Mawa Flow.")
-                    StepCard(number: "2", title: "Switch to Mawa", body: "In any normal text field, tap the globe key and choose Mawa Flow Keyboard.")
-                    StepCard(number: "3", title: "Preview, then insert", body: "Phase 1 uses local demo templates. Tap Mawa, review the result, then insert into the active text box.")
-                    Text("Phase 1 intentionally avoids cloud AI, real voice, and screen reading. Those come after the keyboard insertion flow is proven.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 4)
+
+                    SectionCard(title: "1. Microphone permission", icon: "mic.fill") {
+                        Text("Do this before using the keyboard. iOS may not show the mic permission prompt from inside a keyboard extension, so Mawa asks here first.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        HStack {
+                            StatusBadge(text: micStatus, color: micStatus == "Allowed" ? .green : .orange)
+                            Spacer()
+                            Button("Request Mic") { requestMicrophone() }
+                                .buttonStyle(.borderedProminent)
+                                .tint(.mawaTeal)
+                        }
+                    }
+
+                    SectionCard(title: "2. Choose voice/AI provider", icon: "server.rack") {
+                        Picker("Provider", selection: $provider) {
+                            ForEach(providers, id: \.self) { Text($0) }
+                        }
+                        .pickerStyle(.menu)
+                        .onChange(of: provider) { newValue in
+                            MawaDiagnostics.send(event: "host_provider_selected", source: "host", details: ["provider": newValue])
+                        }
+
+                        Toggle("Prefer local/on-device processing when available", isOn: $localMode)
+                            .tint(.mawaTeal)
+
+                        if provider == "Bring Your Own Key" {
+                            SecureField("Paste API key here", text: $byoKey)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .padding(12)
+                                .background(Color.white, in: RoundedRectangle(cornerRadius: 14))
+                            Text("Prototype note: this saves locally for now. Production should move BYO keys to Keychain/App Group and never put provider keys in the IPA.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else if provider == "Local / On-device" {
+                            Text("Local mode will use on-device speech/Whisper later. This avoids per-request cloud cost but needs a larger model download.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else if provider == "Custom Endpoint" {
+                            Text("Custom endpoint support is planned so advanced users can bring their own server.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Mawa Cloud uses the Mawa VPS proxy. Provider keys stay server-side, not inside the app.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    SectionCard(title: "3. Enable keyboard + Full Access", icon: "keyboard") {
+                        SetupStep(number: "A", text: "Settings → General → Keyboard → Keyboards → Add New Keyboard → Mawa Flow Keyboard")
+                        SetupStep(number: "B", text: "Open Mawa Flow Keyboard settings and turn on Allow Full Access for voice/AI network features")
+                        SetupStep(number: "C", text: "Open Notes, tap the text box, globe → Mawa Flow Keyboard")
+                    }
+
+                    Button {
+                        MawaDiagnostics.send(
+                            event: "host_setup_completed_tapped",
+                            source: "host",
+                            details: ["provider": provider, "localMode": String(localMode), "hasBYOKey": String(!byoKey.isEmpty)]
+                        )
+                        setupEvent = "Setup saved. Now switch to the keyboard in Notes."
+                    } label: {
+                        Label("I’m Ready to Use Mawa Keyboard", systemImage: "checkmark.circle.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.mawaTeal)
+
+                    if !setupEvent.isEmpty {
+                        Text(setupEvent)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(Color.mawaTeal)
+                    }
                 }
                 .padding(20)
             }
             .background(Color.mawaIvory.ignoresSafeArea())
-            .navigationTitle("Mawa Flow")
+            .navigationTitle("Mawa Setup")
+            .onAppear { refreshMicStatus() }
+        }
+    }
+
+    private func refreshMicStatus() {
+        switch AVAudioSession.sharedInstance().recordPermission {
+        case .granted:
+            micStatus = "Allowed"
+        case .denied:
+            micStatus = "Denied"
+        case .undetermined:
+            micStatus = "Not asked yet"
+        @unknown default:
+            micStatus = "Unknown"
+        }
+    }
+
+    private func requestMicrophone() {
+        AVAudioSession.sharedInstance().requestRecordPermission { allowed in
+            DispatchQueue.main.async {
+                micStatus = allowed ? "Allowed" : "Denied"
+                MawaDiagnostics.send(event: "host_mic_permission_result", source: "host", details: ["allowed": String(allowed)])
+            }
         }
     }
 }
@@ -44,20 +144,20 @@ private struct OnboardingView: View {
 private struct HeroCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("Mawa Flow Keyboard", systemImage: "waveform")
+            Label("Mawa Voice Keyboard", systemImage: "waveform")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Color.mawaTeal)
             Text("Speak messy.\nMawa writes clearly.")
                 .font(.system(size: 38, weight: .bold, design: .rounded))
                 .lineSpacing(1)
-            Text("A warm, privacy-aware AI keyboard for turning rough thoughts into ready-to-send text.")
+            Text("Set up permissions, provider choice, and keyboard access before using voice dictation.")
                 .font(.body)
                 .foregroundStyle(.secondary)
             HStack {
-                Pill(text: "Auto")
+                Pill(text: "Dictate")
                 Pill(text: "Reply")
-                Pill(text: "Prompt")
                 Pill(text: "Rewrite")
+                Pill(text: "Prompt")
             }
         }
         .padding(22)
@@ -67,31 +167,54 @@ private struct HeroCard: View {
     }
 }
 
-private struct StepCard: View {
-    let number: String
+private struct SectionCard<Content: View>: View {
     let title: String
-    let bodyText: String
-
-    init(number: String, title: String, body: String) {
-        self.number = number
-        self.title = title
-        self.bodyText = body
-    }
+    let icon: String
+    @ViewBuilder let content: Content
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            Text(number)
-                .font(.headline.weight(.bold))
-                .foregroundStyle(.white)
-                .frame(width: 34, height: 34)
-                .background(Color.mawaTeal, in: Circle())
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.headline)
-                Text(bodyText).font(.subheadline).foregroundStyle(.secondary)
-            }
+        VStack(alignment: .leading, spacing: 12) {
+            Label(title, systemImage: icon)
+                .font(.headline)
+                .foregroundStyle(Color.mawaTeal)
+            content
         }
         .padding(16)
-        .background(.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.white, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Color.black.opacity(0.05)))
+    }
+}
+
+private struct SetupStep: View {
+    let number: String
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(number)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white)
+                .frame(width: 24, height: 24)
+                .background(Color.mawaTeal, in: Circle())
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct StatusBadge: View {
+    let text: String
+    let color: Color
+
+    var body: some View {
+        Text(text)
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(color.opacity(0.16), in: Capsule())
+            .foregroundStyle(color)
     }
 }
 
@@ -105,7 +228,7 @@ private struct DemoLabView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("Try the local Phase 1 brain before using the keyboard extension.")
+                    Text("Try the local demo brain before using the keyboard extension.")
                         .foregroundStyle(.secondary)
                     modePicker
                     TextEditor(text: $draft)
@@ -171,7 +294,7 @@ private struct DiagnosticsView: View {
         NavigationStack {
             List {
                 Section("Live diagnostics") {
-                    Text("Use this while we debug keyboard switching. It only sends lifecycle/status events — not your typed text, clipboard, messages, or screen content.")
+                    Text("Use this while we debug setup, keyboard switching, mic permission, and transcription. It does not send typed text or clipboard content.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     Button {
@@ -189,11 +312,9 @@ private struct DiagnosticsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Section("Keyboard test steps") {
-                    Text("1. Settings → General → Keyboard → Keyboards → Mawa Flow Keyboard.")
-                    Text("2. Turn on Allow Full Access for this diagnostic build.")
-                    Text("3. Open Notes and switch to Mawa from the globe menu.")
-                    Text("4. If it bounces back, tell Mawa the exact time you tried.")
+                Section("If mic does not ask") {
+                    Text("Use Setup → Request Mic first. iOS may not show permission prompts from the keyboard extension.")
+                    Text("If permission is Allowed but recording still fails, send logs — iOS may block direct recording from keyboard extensions and we’ll use a host-app handoff.")
                 }
             }
             .navigationTitle("Diagnostics")
@@ -205,15 +326,20 @@ private struct PrivacyView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("Phase 1") {
-                    Label("No cloud calls", systemImage: "wifi.slash")
-                    Label("No screen reading", systemImage: "eye.slash")
-                    Label("Local deterministic demo templates", systemImage: "checkmark.shield")
+                Section("What Mawa needs") {
+                    Label("Microphone only when you tap the mic", systemImage: "mic")
+                    Label("Full Access for cloud/BYO/server STT", systemImage: "network")
+                    Label("Keyboard access to insert final text", systemImage: "keyboard")
                 }
-                Section("Later") {
-                    Label("Real voice transcription", systemImage: "mic")
-                    Label("Explicit context sources", systemImage: "doc.text.magnifyingglass")
-                    Label("Permissioned skills and connectors", systemImage: "puzzlepiece.extension")
+                Section("Provider choices") {
+                    Label("Mawa Cloud / VPS proxy", systemImage: "cloud")
+                    Label("Bring Your Own API key", systemImage: "key")
+                    Label("Local/on-device planned", systemImage: "iphone")
+                    Label("Custom endpoint planned", systemImage: "server.rack")
+                }
+                Section("Safety") {
+                    Text("Provider keys should not be shipped inside the IPA. Production BYO keys should use Keychain/App Group storage. Audio is only sent when the user explicitly taps mic and stops recording.")
+                        .font(.subheadline)
                 }
             }
             .navigationTitle("Privacy")
