@@ -414,35 +414,57 @@ final class KeyboardViewController: UIInputViewController {
 
     private func startAudioEngineRecording() throws {
         cleanupRecordingResources()
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .measurement, options: [])
-        try session.setActive(true, options: [])
+        var step = "session_category"
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.record, mode: .spokenAudio, options: [])
+            step = "session_active"
+            try session.setActive(true, options: [])
 
-        let engine = AVAudioEngine()
-        let inputNode = engine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("mawa-keyboard-engine-\(UUID().uuidString).wav")
-        let file = try AVAudioFile(forWriting: url, settings: inputFormat.settings)
-
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-            do {
-                try file.write(from: buffer)
-            } catch {
-                self?.MawaDiagnosticsSendMicError("audio_file_write_failed: \(error.localizedDescription)")
+            step = "engine_create"
+            let engine = AVAudioEngine()
+            let inputNode = engine.inputNode
+            let inputFormat = inputNode.outputFormat(forBus: 0)
+            guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+                throw NSError(domain: "MawaKeyboardRecording", code: -4, userInfo: [NSLocalizedDescriptionKey: "Invalid input format: sampleRate=\(inputFormat.sampleRate), channels=\(inputFormat.channelCount)"])
             }
-        }
 
-        engine.prepare()
-        try engine.start()
-        guard engine.isRunning else {
-            inputNode.removeTap(onBus: 0)
-            throw NSError(domain: "MawaKeyboardRecording", code: -2, userInfo: [NSLocalizedDescriptionKey: "AVAudioEngine did not start"])
-        }
+            // Use CAF with the device's native PCM format. The earlier WAV writer can fail
+            // with CoreAudio 'what' when the input format cannot be represented as WAV.
+            step = "open_caf_file"
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("mawa-keyboard-engine-\(UUID().uuidString).caf")
+            let file = try AVAudioFile(
+                forWriting: url,
+                settings: inputFormat.settings,
+                commonFormat: inputFormat.commonFormat,
+                interleaved: inputFormat.isInterleaved
+            )
 
-        audioEngine = engine
-        audioFile = file
-        recordingURL = url
-        recordingBackend = "audio_engine_wav"
+            step = "install_tap"
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+                do {
+                    try file.write(from: buffer)
+                } catch {
+                    self?.MawaDiagnosticsSendMicError("audio_file_write_failed: \(error.localizedDescription)")
+                }
+            }
+
+            step = "engine_prepare"
+            engine.prepare()
+            step = "engine_start"
+            try engine.start()
+            guard engine.isRunning else {
+                inputNode.removeTap(onBus: 0)
+                throw NSError(domain: "MawaKeyboardRecording", code: -2, userInfo: [NSLocalizedDescriptionKey: "AVAudioEngine did not start"])
+            }
+
+            audioEngine = engine
+            audioFile = file
+            recordingURL = url
+            recordingBackend = "audio_engine_caf"
+        } catch {
+            throw NSError(domain: "MawaKeyboardRecording", code: -5, userInfo: [NSLocalizedDescriptionKey: "\(step): \(error.localizedDescription)"])
+        }
     }
 
     private func startAVRecorderFallback() throws {
