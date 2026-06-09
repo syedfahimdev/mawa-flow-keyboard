@@ -223,7 +223,3 @@ extension Color {
     static let mawaTeal = Color(red: 0.02, green: 0.42, blue: 0.35)
     static let mawaViolet = Color(red: 0.73, green: 0.58, blue: 1.0)
 }
-
-#Preview {
-    ContentView()
-}

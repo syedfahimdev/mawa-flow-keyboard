@@ -52,6 +52,18 @@ jobs:
             CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
             clean build
 
+      - name: Ad-hoc sign nested bundles for signer compatibility
+        run: |
+          set -euo pipefail
+          PRODUCTS_DIR="build/Build/Products/Release-iphoneos"
+          APP_PATH="$PRODUCTS_DIR/MawaFlow.app"
+          EXT_PATH="$APP_PATH/PlugIns/MawaKeyboard.appex"
+          if [ -d "$EXT_PATH" ]; then
+            /usr/bin/codesign --force --sign - --timestamp=none "$EXT_PATH"
+          fi
+          /usr/bin/codesign --force --sign - --timestamp=none "$APP_PATH"
+          /usr/bin/codesign --verify --deep --strict "$APP_PATH" || true
+
       - name: Package unsigned IPA
         run: |
           set -euo pipefail
