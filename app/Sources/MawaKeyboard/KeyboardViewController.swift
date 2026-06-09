@@ -236,8 +236,8 @@ final class KeyboardViewController: UIInputViewController {
         actionRow.axis = .horizontal
         actionRow.spacing = 8
         actionRow.distribution = .fillEqually
-        actionRow.addArrangedSubview(pillButton("Regenerate", action: #selector(handleRegenerate), filled: false))
-        actionRow.addArrangedSubview(pillButton("Open App", action: #selector(handleOpenApp), filled: false))
+        actionRow.addArrangedSubview(pillButton("Shortcut", action: #selector(handleShortcutDictate), filled: false))
+        actionRow.addArrangedSubview(pillButton("Paste Clip", action: #selector(handlePasteClipboard), filled: false))
         actionRow.addArrangedSubview(pillButton("Insert", action: #selector(handleInsert), filled: true))
         rootStack.addArrangedSubview(actionRow)
     }
@@ -714,6 +714,32 @@ final class KeyboardViewController: UIInputViewController {
     @objc private func handleRegenerate() {
         generateVoicePreview()
         updateState(.ready)
+    }
+
+    @objc private func handlePasteClipboard() {
+        let clipboardText = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !clipboardText.isEmpty else {
+            currentTranscript = ""
+            generatedText = "Clipboard is empty. Tap Shortcut, speak, then return here and tap Paste Clip."
+            MawaDiagnostics.send(event: "keyboard_paste_clip_empty", source: "keyboard")
+            updateState(.ready)
+            return
+        }
+        generatedText = clipboardText
+        currentTranscript = "Copied from Shortcut"
+        MawaDiagnostics.send(event: "keyboard_paste_clip_loaded", source: "keyboard", details: ["chars": String(clipboardText.count)])
+        textDocumentProxy.insertText(clipboardText)
+        updateState(.idle)
+    }
+
+    @objc private func handleShortcutDictate() {
+        MawaDiagnostics.send(event: "keyboard_shortcut_dictate_tapped", source: "keyboard")
+        let shortcutName = "Mawa Dictate".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "Mawa%20Dictate"
+        guard let url = URL(string: "shortcuts://run-shortcut?name=\(shortcutName)") else { return }
+        extensionContext?.open(url)
+        statusLabel.text = "Shortcut opened"
+        transcriptLabel.text = "Speak in Apple Dictate Text"
+        previewLabel.text = "When the Shortcut finishes, return here and tap Paste Clip. This uses Apple Shortcuts as the microphone loophole."
     }
 
     @objc private func handleClear() {

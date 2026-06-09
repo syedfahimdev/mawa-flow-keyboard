@@ -134,6 +134,20 @@ private struct SetupView: View {
                         SetupStep(number: "C", text: "Open Notes, tap the text box, globe → Mawa Flow Keyboard")
                     }
 
+                    SectionCard(title: "4. Shortcut loophole voice mode", icon: "bolt.badge.clock") {
+                        Text("If iOS blocks microphone recording inside the keyboard, use Apple Shortcuts as the mic layer. Shortcuts is allowed to run Apple’s Dictate Text action, then Mawa can paste the dictated clipboard from the keyboard.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        SetupStep(number: "A", text: "Open the Shortcuts app → + → New Shortcut")
+                        SetupStep(number: "B", text: "Name it exactly: Mawa Dictate")
+                        SetupStep(number: "C", text: "Add action: Dictate Text. Set Stop Listening to After Pause.")
+                        SetupStep(number: "D", text: "Add action: Copy to Clipboard. Use the Dictated Text variable.")
+                        SetupStep(number: "E", text: "Optional: Add Show Notification saying ‘Mawa copied. Return and tap Paste Clip.’")
+                        Text("Then from the Mawa keyboard, tap Shortcut → speak → return to the text field → tap Paste Clip.")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color.mawaTeal)
+                    }
+
                     Button {
                         MawaDiagnostics.send(
                             event: "host_setup_completed_tapped",
