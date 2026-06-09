@@ -1,0 +1,40 @@
+name: MawaFlowKeyboard
+options:
+  bundleIdPrefix: com.mawa
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: 5.9
+    IPHONEOS_DEPLOYMENT_TARGET: 17.0
+targets:
+  MawaFlow:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources/MawaFlow
+      - path: Sources/Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mawa.flow
+        INFOPLIST_FILE: Sources/MawaFlow/Info.plist
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        DEVELOPMENT_TEAM: ""
+    dependencies:
+      - target: MawaKeyboard
+        embed: true
+  MawaKeyboard:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Sources/MawaKeyboard
+      - path: Sources/Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mawa.flow.keyboard
+        INFOPLIST_FILE: Sources/MawaKeyboard/Info.plist
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        DEVELOPMENT_TEAM: ""

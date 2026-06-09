@@ -1,0 +1,25 @@
+# Xcode / Apple
+DerivedData/
+build/
+*.xcworkspace
+*.xcodeproj
+*.xcuserstate
+*.xcuserdata/
+*.ipa
+*.app
+*.appex
+*.dSYM
+
+# macOS
+.DS_Store
+
+# Secrets / signing material
+*.p12
+*.mobileprovision
+*.cer
+*.key
+.env
+
+# Archives
+*.zip
+!mawa-flow-keyboard-phase1.zip

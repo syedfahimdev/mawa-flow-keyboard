@@ -1,0 +1,93 @@
+name: Build unsigned iOS IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  IPA_NAME: mawa-flow-keyboard-unsigned.ipa
+
+jobs:
+  build-ios-unsigned:
+    name: Build unsigned IPA
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build app for iPhoneOS without signing
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project MawaFlowKeyboard.xcodeproj \
+            -scheme MawaFlow \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            clean build
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          PRODUCTS_DIR="build/Build/Products/Release-iphoneos"
+          APP_PATH="$PRODUCTS_DIR/MawaFlow.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Could not find $APP_PATH"
+            find build -maxdepth 6 -type d -name '*.app' -print
+            exit 1
+          fi
+          rm -rf Payload "../$IPA_NAME"
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          /usr/bin/zip -qry "../$IPA_NAME" Payload
+          cd ..
+          ls -lh "$IPA_NAME"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mawa-flow-keyboard-unsigned-ipa
+          path: ${{ env.IPA_NAME }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish latest unsigned IPA release asset
+        if: github.ref == 'refs/heads/main'
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git tag -f latest "$GITHUB_SHA"
+          git push origin latest --force
+          if gh release view latest >/dev/null 2>&1; then
+            gh release edit latest \
+              --title "Mawa Flow Latest Unsigned IPA" \
+              --notes "Automated unsigned iOS build from $GITHUB_SHA. Download the IPA, sign it on-device with your certificate/provisioning profile, then install over the existing app to update."
+          else
+            gh release create latest \
+              --title "Mawa Flow Latest Unsigned IPA" \
+              --notes "Automated unsigned iOS build. Download the IPA, sign it on-device with your certificate/provisioning profile, then install over the existing app to update."
+          fi
+          gh release upload latest "$IPA_NAME" --clobber
