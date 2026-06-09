@@ -59,9 +59,9 @@ jobs:
           APP_PATH="$PRODUCTS_DIR/MawaFlow.app"
           EXT_PATH="$APP_PATH/PlugIns/MawaKeyboard.appex"
           if [ -d "$EXT_PATH" ]; then
-            /usr/bin/codesign --force --sign - --timestamp=none "$EXT_PATH"
+            /usr/bin/codesign --force --sign - --timestamp=none --entitlements Sources/MawaKeyboard/MawaKeyboard.entitlements "$EXT_PATH"
           fi
-          /usr/bin/codesign --force --sign - --timestamp=none "$APP_PATH"
+          /usr/bin/codesign --force --sign - --timestamp=none --entitlements Sources/MawaFlow/MawaFlow.entitlements "$APP_PATH"
           /usr/bin/codesign --verify --deep --strict "$APP_PATH" || true
 
       - name: Package unsigned IPA

@@ -19,6 +19,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.mawa.flow
         INFOPLIST_FILE: Sources/MawaFlow/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Sources/MawaFlow/MawaFlow.entitlements
         MARKETING_VERSION: 0.1.0
         CURRENT_PROJECT_VERSION: 1
         DEVELOPMENT_TEAM: ""
@@ -35,6 +36,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.mawa.flow.keyboard
         INFOPLIST_FILE: Sources/MawaKeyboard/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Sources/MawaKeyboard/MawaKeyboard.entitlements
         MARKETING_VERSION: 0.1.0
         CURRENT_PROJECT_VERSION: 1
         DEVELOPMENT_TEAM: ""

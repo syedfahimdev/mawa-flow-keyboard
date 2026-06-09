@@ -13,6 +13,7 @@ struct ContentView: View {
 
     @AppStorage("mawaSetupComplete") private var setupComplete = false
     @State private var selectedTab: AppTab = .setup
+    @StateObject private var ipcVoiceSession = HostIPCVoiceSession()
 
     var body: some View {
         Group {
@@ -25,6 +26,7 @@ struct ContentView: View {
         .tint(.mawaTeal)
         .onAppear {
             MawaDiagnostics.send(event: "host_app_opened", source: "host")
+            ipcVoiceSession.startObserving()
         }
         .onOpenURL { url in
             handleDeepLink(url)

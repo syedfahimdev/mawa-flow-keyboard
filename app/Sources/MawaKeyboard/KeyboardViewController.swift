@@ -79,6 +79,9 @@ final class KeyboardViewController: UIInputViewController {
     private var audioFile: AVAudioFile?
     private var recordingURL: URL?
     private var recordingBackend = "none"
+    private var ipcRequestID: String?
+    private var resultPollTimer: Timer?
+    private var resultPollAttempts = 0
 
     private let rootStack = UIStackView()
     private let modeStack = UIStackView()
@@ -405,9 +408,7 @@ final class KeyboardViewController: UIInputViewController {
                         self.updateState(.listening)
                     } catch {
                         self.MawaDiagnosticsSendMicError(error.localizedDescription)
-                        self.statusLabel.text = "Keyboard mic blocked"
-                        self.transcriptLabel.text = "iOS did not start recording"
-                        self.previewLabel.text = "I tried the Wispr-style live audio engine path and the recorder fallback, but iOS/signing still blocked microphone capture in the keyboard. Tap Open App for the reliable recorder while I inspect the new error logs."
+                        self.startIPCRecording(fallbackReason: error.localizedDescription)
                     }
                 }
             }
@@ -502,7 +503,113 @@ final class KeyboardViewController: UIInputViewController {
         recordingBackend = "av_audio_recorder_m4a"
     }
 
+    private func startIPCRecording(fallbackReason: String) {
+        guard hasFullAccess else {
+            MawaDiagnosticsSendMicError("ipc_full_access_disabled")
+            statusLabel.text = "Full Access required"
+            previewLabel.text = "Enable Allow Full Access so the keyboard can communicate with the Mawa host app session."
+            return
+        }
+        guard MawaIPC.sharedDefaults != nil else {
+            MawaDiagnosticsSendMicError("ipc_app_group_unavailable")
+            statusLabel.text = "App Group unavailable"
+            transcriptLabel.text = "Keyboard cannot reach Mawa session"
+            previewLabel.text = "The app/keyboard must be signed with the same App Group entitlement: \(MawaIPC.appGroupID)."
+            return
+        }
+
+        let requestID = UUID().uuidString
+        ipcRequestID = requestID
+        recordingBackend = "ipc_host_session"
+        resultPollAttempts = 0
+        resultPollTimer?.invalidate()
+        MawaIPC.writeCommand(MawaIPC.Command.start, requestID: requestID, mode: selectedMode.rawValue)
+        MawaIPC.writeState(MawaIPC.State.idle, requestID: requestID)
+        MawaIPC.post(MawaIPC.NotificationName.startRecording)
+        MawaDiagnostics.send(
+            event: "keyboard_ipc_start_sent",
+            source: "keyboard",
+            details: ["requestID": requestID, "mode": selectedMode.rawValue, "fallbackReason": fallbackReason]
+        )
+        updateState(.listening)
+        statusLabel.text = "Recording via Mawa session…"
+        transcriptLabel.text = "Keep Mawa open in background"
+        previewLabel.text = "Keyboard mic was blocked, so this is using the host app audio session through App Group/Darwin IPC. Tap mic again to stop and transcribe."
+    }
+
+    private func stopIPCRecordingAndPoll() {
+        guard let requestID = ipcRequestID else {
+            generatedText = "No active Mawa session request was found. Try tapping mic again."
+            updateState(.ready)
+            return
+        }
+        MawaIPC.writeCommand(MawaIPC.Command.stop, requestID: requestID, mode: selectedMode.rawValue)
+        MawaIPC.post(MawaIPC.NotificationName.stopRecording)
+        MawaDiagnostics.send(event: "keyboard_ipc_stop_sent", source: "keyboard", details: ["requestID": requestID, "mode": selectedMode.rawValue])
+        updateState(.processing)
+        statusLabel.text = "Waiting for Mawa session…"
+        previewLabel.text = "The host app is stopping the recording and sending it to the STT backend."
+        startResultPolling(requestID: requestID)
+    }
+
+    private func startResultPolling(requestID: String) {
+        resultPollTimer?.invalidate()
+        resultPollAttempts = 0
+        resultPollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            self.resultPollAttempts += 1
+            guard let defaults = MawaIPC.sharedDefaults else {
+                timer.invalidate()
+                self.generatedText = "App Group storage is unavailable, so the keyboard cannot receive the host app transcript."
+                self.updateState(.ready)
+                return
+            }
+
+            let resultRequestID = defaults.string(forKey: MawaIPC.Key.resultRequestID)
+            let state = defaults.string(forKey: MawaIPC.Key.state) ?? ""
+            guard resultRequestID == requestID else {
+                if self.resultPollAttempts > 80 {
+                    timer.invalidate()
+                    self.generatedText = "No response from the Mawa host session. Open Mawa once, keep it in the background, then try again."
+                    MawaDiagnostics.send(event: "keyboard_ipc_result_timeout", source: "keyboard", details: ["requestID": requestID, "state": state])
+                    self.updateState(.ready)
+                }
+                return
+            }
+
+            if state == MawaIPC.State.ready {
+                timer.invalidate()
+                let transcript = defaults.string(forKey: MawaIPC.Key.resultTranscript) ?? ""
+                let cleaned = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                if cleaned.isEmpty {
+                    self.currentTranscript = ""
+                    self.generatedText = "I couldn’t detect speech from the Mawa session. Try again closer to the mic."
+                } else {
+                    self.generateVoicePreview(from: cleaned)
+                }
+                MawaDiagnostics.send(event: "keyboard_ipc_result_ready", source: "keyboard", details: ["requestID": requestID, "chars": String(cleaned.count), "mode": self.selectedMode.rawValue])
+                self.updateState(.ready)
+            } else if state == MawaIPC.State.failed {
+                timer.invalidate()
+                let error = defaults.string(forKey: MawaIPC.Key.resultError) ?? "Unknown Mawa session error"
+                self.currentTranscript = ""
+                self.generatedText = "Mawa session failed: \(error)"
+                MawaDiagnostics.send(event: "keyboard_ipc_result_failed", source: "keyboard", details: ["requestID": requestID, "error": error])
+                self.updateState(.ready)
+            } else if self.resultPollAttempts > 80 {
+                timer.invalidate()
+                self.generatedText = "Mawa session timed out while waiting for transcription. Open Mawa once and try again."
+                MawaDiagnostics.send(event: "keyboard_ipc_result_timeout", source: "keyboard", details: ["requestID": requestID, "state": state])
+                self.updateState(.ready)
+            }
+        }
+    }
+
     private func stopRecordingAndTranscribe() {
+        if recordingBackend == "ipc_host_session" {
+            stopIPCRecordingAndPoll()
+            return
+        }
         audioRecorder?.stop()
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
@@ -559,6 +666,9 @@ final class KeyboardViewController: UIInputViewController {
         audioFile = nil
         recordingURL = nil
         recordingBackend = "none"
+        ipcRequestID = nil
+        resultPollTimer?.invalidate()
+        resultPollTimer = nil
     }
 
     private func MawaDiagnosticsSendMicError(_ error: String) {
