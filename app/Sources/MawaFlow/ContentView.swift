@@ -65,7 +65,13 @@ private struct HeroCard: View {
 private struct StepCard: View {
     let number: String
     let title: String
-    let body: String
+    let bodyText: String
+
+    init(number: String, title: String, body: String) {
+        self.number = number
+        self.title = title
+        self.bodyText = body
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -76,7 +82,7 @@ private struct StepCard: View {
                 .background(Color.mawaTeal, in: Circle())
             VStack(alignment: .leading, spacing: 4) {
                 Text(title).font(.headline)
-                Text(body).font(.subheadline).foregroundStyle(.secondary)
+                Text(bodyText).font(.subheadline).foregroundStyle(.secondary)
             }
         }
         .padding(16)
