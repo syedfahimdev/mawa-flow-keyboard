@@ -1,11 +1,14 @@
 import AVFoundation
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     var body: some View {
         TabView {
             SetupView()
                 .tabItem { Label("Setup", systemImage: "checklist") }
+            HostVoiceTestView()
+                .tabItem { Label("Voice Test", systemImage: "mic.circle") }
             DemoLabView()
                 .tabItem { Label("Demo", systemImage: "waveform") }
             DiagnosticsView()
@@ -215,6 +218,156 @@ private struct StatusBadge: View {
             .padding(.vertical, 6)
             .background(color.opacity(0.16), in: Capsule())
             .foregroundStyle(color)
+    }
+}
+
+private final class HostVoiceRecorder: NSObject, ObservableObject {
+    @Published var state = "Ready"
+    @Published var transcript = ""
+    @Published var output = ""
+    @Published var isRecording = false
+    @Published var selectedMode: MawaMode = .dictate
+
+    private var recorder: AVAudioRecorder?
+    private var recordingURL: URL?
+
+    func toggleRecording() {
+        isRecording ? stop() : start()
+    }
+
+    private func start() {
+        AVAudioSession.sharedInstance().requestRecordPermission { [weak self] allowed in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard allowed else {
+                    self.state = "Mic permission denied"
+                    MawaDiagnostics.send(event: "host_voice_test_permission_denied", source: "host")
+                    return
+                }
+                do {
+                    let session = AVAudioSession.sharedInstance()
+                    try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.defaultToSpeaker, .duckOthers])
+                    try session.setActive(true)
+                    let url = FileManager.default.temporaryDirectory.appendingPathComponent("mawa-host-voice-\(UUID().uuidString).m4a")
+                    let settings: [String: Any] = [
+                        AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                        AVSampleRateKey: 16_000,
+                        AVNumberOfChannelsKey: 1,
+                        AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+                    ]
+                    let recorder = try AVAudioRecorder(url: url, settings: settings)
+                    recorder.prepareToRecord()
+                    if recorder.record() {
+                        self.recordingURL = url
+                        self.recorder = recorder
+                        self.isRecording = true
+                        self.state = "Recording… tap stop when done"
+                        self.transcript = ""
+                        self.output = ""
+                        MawaDiagnostics.send(event: "host_voice_test_recording_started", source: "host", details: ["mode": self.selectedMode.rawValue])
+                    } else {
+                        self.state = "Recorder did not start"
+                        MawaDiagnostics.send(event: "host_voice_test_recording_failed", source: "host", details: ["error": "record_returned_false"])
+                    }
+                } catch {
+                    self.state = "Recording failed: \(error.localizedDescription)"
+                    MawaDiagnostics.send(event: "host_voice_test_recording_failed", source: "host", details: ["error": error.localizedDescription])
+                }
+            }
+        }
+    }
+
+    private func stop() {
+        recorder?.stop()
+        recorder = nil
+        isRecording = false
+        state = "Transcribing…"
+        MawaDiagnostics.send(event: "host_voice_test_recording_finished", source: "host", details: ["mode": selectedMode.rawValue])
+
+        guard let recordingURL else {
+            state = "No recording found"
+            return
+        }
+
+        MawaDiagnostics.transcribeAudio(fileURL: recordingURL, mode: selectedMode.rawValue) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                try? FileManager.default.removeItem(at: recordingURL)
+                self.recordingURL = nil
+                switch result {
+                case .success(let transcript):
+                    let cleaned = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.transcript = cleaned.isEmpty ? "No speech detected" : cleaned
+                    if cleaned.isEmpty {
+                        self.output = "Try again closer to the microphone."
+                    } else {
+                        self.output = MawaFlowEngine.generate(draft: cleaned, requestedMode: self.selectedMode).output
+                    }
+                    self.state = "Done"
+                    MawaDiagnostics.send(event: "host_voice_test_transcription_success", source: "host", details: ["chars": String(cleaned.count), "mode": self.selectedMode.rawValue])
+                case .failure(let error):
+                    self.state = "Transcription failed"
+                    self.output = error.localizedDescription
+                    MawaDiagnostics.send(event: "host_voice_test_transcription_failed", source: "host", details: ["error": error.localizedDescription])
+                }
+            }
+        }
+    }
+}
+
+private struct HostVoiceTestView: View {
+    @StateObject private var recorder = HostVoiceRecorder()
+    private let modes: [MawaMode] = [.dictate, .reply, .rewrite, .prompt]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    SectionCard(title: "Voice recording test", icon: "mic.circle.fill") {
+                        Text("This records from the main app, not the keyboard extension. If this works but keyboard mic does not, iOS is blocking direct keyboard recording and we’ll use a handoff/fallback path.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        Picker("Mode", selection: $recorder.selectedMode) {
+                            ForEach(modes) { mode in Text(mode.rawValue).tag(mode) }
+                        }
+                        .pickerStyle(.segmented)
+                        Button {
+                            recorder.toggleRecording()
+                        } label: {
+                            Label(recorder.isRecording ? "Stop + Transcribe" : "Start Recording", systemImage: recorder.isRecording ? "stop.circle.fill" : "mic.fill")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(recorder.isRecording ? .red : .mawaTeal)
+                        StatusBadge(text: recorder.state, color: recorder.isRecording ? .red : .mawaTeal)
+                    }
+
+                    SectionCard(title: "Transcript", icon: "text.quote") {
+                        Text(recorder.transcript.isEmpty ? "No transcript yet." : recorder.transcript)
+                            .font(.body)
+                            .textSelection(.enabled)
+                    }
+
+                    SectionCard(title: "Mawa output", icon: "sparkles") {
+                        Text(recorder.output.isEmpty ? "No output yet." : recorder.output)
+                            .font(.body)
+                            .textSelection(.enabled)
+                        Button {
+                            UIPasteboard.general.string = recorder.output
+                            MawaDiagnostics.send(event: "host_voice_test_copied_output", source: "host")
+                        } label: {
+                            Label("Copy Output", systemImage: "doc.on.doc")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(recorder.output.isEmpty)
+                    }
+                }
+                .padding(20)
+            }
+            .background(Color.mawaIvory.ignoresSafeArea())
+            .navigationTitle("Voice Test")
+        }
     }
 }
 

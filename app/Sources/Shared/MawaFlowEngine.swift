@@ -1,6 +1,6 @@
 import Foundation
 
-public enum MawaMode: String, CaseIterable, Identifiable {
+public enum MawaMode: String, CaseIterable, Identifiable, Hashable {
     case auto = "Auto"
     case dictate = "Dictate"
     case reply = "Reply"
