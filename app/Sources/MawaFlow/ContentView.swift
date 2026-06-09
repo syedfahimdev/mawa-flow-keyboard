@@ -7,10 +7,15 @@ struct ContentView: View {
                 .tabItem { Label("Start", systemImage: "sparkles") }
             DemoLabView()
                 .tabItem { Label("Demo", systemImage: "keyboard") }
+            DiagnosticsView()
+                .tabItem { Label("Diagnostics", systemImage: "stethoscope") }
             PrivacyView()
                 .tabItem { Label("Privacy", systemImage: "lock.shield") }
         }
         .tint(.mawaTeal)
+        .onAppear {
+            MawaDiagnostics.send(event: "host_app_opened", source: "host")
+        }
     }
 }
 
@@ -155,6 +160,43 @@ private struct DemoLabView: View {
                         .tint(selectedMode == mode ? .mawaTeal : .secondary)
                 }
             }
+        }
+    }
+}
+
+private struct DiagnosticsView: View {
+    @State private var status = "No diagnostic event sent yet."
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Live diagnostics") {
+                    Text("Use this while we debug keyboard switching. It only sends lifecycle/status events — not your typed text, clipboard, messages, or screen content.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Button {
+                        MawaDiagnostics.send(
+                            event: "host_manual_test_button",
+                            source: "host",
+                            details: ["screen": "Diagnostics"]
+                        )
+                        status = "Sent test event. Tell Mawa you tapped it."
+                    } label: {
+                        Label("Send Test Event", systemImage: "paperplane")
+                    }
+                    Text(status)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Keyboard test steps") {
+                    Text("1. Settings → General → Keyboard → Keyboards → Mawa Flow Keyboard.")
+                    Text("2. Turn on Allow Full Access for this diagnostic build.")
+                    Text("3. Open Notes and switch to Mawa from the globe menu.")
+                    Text("4. If it bounces back, tell Mawa the exact time you tried.")
+                }
+            }
+            .navigationTitle("Diagnostics")
         }
     }
 }

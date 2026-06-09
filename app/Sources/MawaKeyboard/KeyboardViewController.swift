@@ -20,8 +20,25 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        MawaDiagnostics.send(
+            event: "keyboard_view_did_load",
+            source: "keyboard",
+            details: [
+                "has_full_access": String(hasFullAccess),
+                "needs_input_mode_switch_key": String(needsInputModeSwitchKey)
+            ]
+        )
         setupKeyboard()
         generatePreview()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        MawaDiagnostics.send(
+            event: "keyboard_view_did_appear",
+            source: "keyboard",
+            details: ["has_full_access": String(hasFullAccess)]
+        )
     }
 
     private func setupKeyboard() {
@@ -211,10 +228,12 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     @objc private func handleGenerate() {
+        MawaDiagnostics.send(event: "keyboard_generate_tapped", source: "keyboard")
         generatePreview()
     }
 
     @objc private func handleInsert() {
+        MawaDiagnostics.send(event: "keyboard_insert_tapped", source: "keyboard")
         textDocumentProxy.insertText(previewText)
     }
 
