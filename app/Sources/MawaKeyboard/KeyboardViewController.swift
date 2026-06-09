@@ -1,32 +1,91 @@
 import UIKit
 
-private final class MawaKeyButton: UIButton {
-    var keyValue: String = ""
-    var specialAction: String = ""
+private final class WaveBarView: UIView {
+    private let bars: [UIView]
+
+    override init(frame: CGRect) {
+        bars = (0..<9).map { _ in UIView() }
+        super.init(frame: frame)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        bars = (0..<9).map { _ in UIView() }
+        super.init(coder: coder)
+        setup()
+    }
+
+    private func setup() {
+        let stack = UIStackView(arrangedSubviews: bars)
+        stack.axis = .horizontal
+        stack.alignment = .center
+        stack.distribution = .equalSpacing
+        stack.spacing = 5
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+
+        for (index, bar) in bars.enumerated() {
+            bar.backgroundColor = UIColor.white.withAlphaComponent(0.95)
+            bar.layer.cornerRadius = 3
+            bar.translatesAutoresizingMaskIntoConstraints = false
+            bar.widthAnchor.constraint(equalToConstant: 6).isActive = true
+            bar.heightAnchor.constraint(equalToConstant: CGFloat([16, 28, 42, 58, 74, 58, 42, 28, 16][index])).isActive = true
+        }
+    }
+
+    func start() {
+        stop()
+        for (index, bar) in bars.enumerated() {
+            let animation = CABasicAnimation(keyPath: "transform.scale.y")
+            animation.fromValue = 0.35
+            animation.toValue = 1.15
+            animation.duration = 0.44
+            animation.autoreverses = true
+            animation.repeatCount = .infinity
+            animation.beginTime = CACurrentMediaTime() + Double(index) * 0.055
+            animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            bar.layer.add(animation, forKey: "mawa.wave")
+        }
+    }
+
+    func stop() {
+        bars.forEach { $0.layer.removeAnimation(forKey: "mawa.wave") }
+    }
 }
 
 final class KeyboardViewController: UIInputViewController {
-    private enum KeyboardPage {
-        case letters
-        case numbers
+    private enum VoiceState {
+        case idle
+        case listening
+        case ready
     }
 
+    private var voiceState: VoiceState = .idle
+    private var selectedMode: MawaMode = .dictate
+    private var variant = 0
+    private var generatedText = ""
+
     private let rootStack = UIStackView()
-    private let aiNavStack = UIStackView()
-    private let keyRowsStack = UIStackView()
+    private let modeStack = UIStackView()
+    private let titleLabel = UILabel()
+    private let statusLabel = UILabel()
+    private let transcriptLabel = UILabel()
+    private let previewLabel = UILabel()
+    private let micButton = UIButton(type: .system)
+    private let waveView = WaveBarView()
 
-    private var keyboardPage: KeyboardPage = .letters
-    private var isShiftEnabled = false
-    private var typedBuffer = ""
-    private var toneIndex = 0
-    private let tones = ["Casual", "Polite", "Formal", "Funny"]
-    private var toneButton: MawaKeyButton?
-
-    private let keyboardBackground = UIColor(red: 0.81, green: 0.83, blue: 0.87, alpha: 1.0)
-    private let keyBackground = UIColor.white
-    private let specialKeyBackground = UIColor(red: 0.67, green: 0.70, blue: 0.75, alpha: 1.0)
-    private let aiBlue = UIColor(red: 0.02, green: 0.48, blue: 1.0, alpha: 1.0)
-    private let keyText = UIColor.black
+    private let background = UIColor(red: 0.04, green: 0.06, blue: 0.09, alpha: 1.0)
+    private let card = UIColor(red: 0.10, green: 0.12, blue: 0.17, alpha: 1.0)
+    private let cardLight = UIColor(red: 0.15, green: 0.17, blue: 0.23, alpha: 1.0)
+    private let blue = UIColor(red: 0.04, green: 0.52, blue: 0.96, alpha: 1.0)
+    private let violet = UIColor(red: 0.56, green: 0.42, blue: 1.0, alpha: 1.0)
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -36,10 +95,11 @@ final class KeyboardViewController: UIInputViewController {
             details: [
                 "has_full_access": String(hasFullAccess),
                 "needs_input_mode_switch_key": String(needsInputModeSwitchKey),
-                "layout": "native_ios_keyboard_ai_nav_v1"
+                "layout": "voice_mic_wave_v1"
             ]
         )
-        setupKeyboard()
+        setupVoiceKeyboard()
+        updateState(.idle)
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -51,14 +111,14 @@ final class KeyboardViewController: UIInputViewController {
         )
     }
 
-    private func setupKeyboard() {
-        view.backgroundColor = keyboardBackground
-        view.heightAnchor.constraint(greaterThanOrEqualToConstant: 330).isActive = true
+    private func setupVoiceKeyboard() {
+        view.backgroundColor = background
+        view.heightAnchor.constraint(greaterThanOrEqualToConstant: 332).isActive = true
 
         rootStack.axis = .vertical
-        rootStack.spacing = 7
+        rootStack.spacing = 10
         rootStack.translatesAutoresizingMaskIntoConstraints = false
-        rootStack.layoutMargins = UIEdgeInsets(top: 6, left: 3, bottom: 5, right: 3)
+        rootStack.layoutMargins = UIEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
         rootStack.isLayoutMarginsRelativeArrangement = true
         view.addSubview(rootStack)
 
@@ -69,271 +129,258 @@ final class KeyboardViewController: UIInputViewController {
             rootStack.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
 
-        buildAINavbar()
+        let header = UIStackView()
+        header.axis = .horizontal
+        header.spacing = 8
+        header.alignment = .center
 
-        keyRowsStack.axis = .vertical
-        keyRowsStack.spacing = 7
-        rootStack.addArrangedSubview(keyRowsStack)
-        rebuildKeyRows()
-    }
+        let globe = roundIconButton("🌐", action: #selector(handleNextKeyboard))
+        globe.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        header.addArrangedSubview(globe)
 
-    private func buildAINavbar() {
-        let scrollView = UIScrollView()
-        scrollView.showsHorizontalScrollIndicator = false
-        scrollView.alwaysBounceHorizontal = true
-        scrollView.backgroundColor = keyboardBackground
-        scrollView.heightAnchor.constraint(equalToConstant: 40).isActive = true
-        rootStack.addArrangedSubview(scrollView)
+        let titleBlock = UIStackView()
+        titleBlock.axis = .vertical
+        titleBlock.spacing = 1
 
-        aiNavStack.axis = .horizontal
-        aiNavStack.spacing = 7
-        aiNavStack.alignment = .center
-        aiNavStack.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.addSubview(aiNavStack)
+        titleLabel.text = "Mawa Voice"
+        titleLabel.font = .systemFont(ofSize: 16, weight: .bold)
+        titleLabel.textColor = .white
+        titleBlock.addArrangedSubview(titleLabel)
+
+        statusLabel.text = "Tap mic to start dictation"
+        statusLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        statusLabel.textColor = UIColor.white.withAlphaComponent(0.62)
+        titleBlock.addArrangedSubview(statusLabel)
+
+        header.addArrangedSubview(titleBlock)
+
+        let clear = pillButton("Clear", action: #selector(handleClear), filled: false)
+        clear.widthAnchor.constraint(equalToConstant: 66).isActive = true
+        header.addArrangedSubview(clear)
+
+        rootStack.addArrangedSubview(header)
+
+        modeStack.axis = .horizontal
+        modeStack.spacing = 7
+        modeStack.distribution = .fillEqually
+        rootStack.addArrangedSubview(modeStack)
+        rebuildModeButtons()
+
+        let voiceCard = UIView()
+        voiceCard.backgroundColor = card
+        voiceCard.layer.cornerRadius = 28
+        voiceCard.translatesAutoresizingMaskIntoConstraints = false
+        rootStack.addArrangedSubview(voiceCard)
+
+        let voiceStack = UIStackView()
+        voiceStack.axis = .vertical
+        voiceStack.alignment = .center
+        voiceStack.spacing = 12
+        voiceStack.translatesAutoresizingMaskIntoConstraints = false
+        voiceCard.addSubview(voiceStack)
 
         NSLayoutConstraint.activate([
-            aiNavStack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor, constant: 4),
-            aiNavStack.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor, constant: -4),
-            aiNavStack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor, constant: 2),
-            aiNavStack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor, constant: -2),
-            aiNavStack.heightAnchor.constraint(equalTo: scrollView.frameLayoutGuide.heightAnchor, constant: -4)
+            voiceStack.leadingAnchor.constraint(equalTo: voiceCard.leadingAnchor, constant: 16),
+            voiceStack.trailingAnchor.constraint(equalTo: voiceCard.trailingAnchor, constant: -16),
+            voiceStack.topAnchor.constraint(equalTo: voiceCard.topAnchor, constant: 14),
+            voiceStack.bottomAnchor.constraint(equalTo: voiceCard.bottomAnchor, constant: -14),
+            voiceCard.heightAnchor.constraint(greaterThanOrEqualToConstant: 168)
         ])
 
-        aiNavStack.addArrangedSubview(aiNavButton("✦ Rewrite", action: "rewrite", highlighted: true))
-        toneButton = aiNavButton("Tone: \(tones[toneIndex])", action: "tone", highlighted: false)
-        if let toneButton { aiNavStack.addArrangedSubview(toneButton) }
-        aiNavStack.addArrangedSubview(aiNavButton("Reply", action: "reply", highlighted: false))
-        aiNavStack.addArrangedSubview(aiNavButton("Prompt", action: "prompt", highlighted: false))
-        aiNavStack.addArrangedSubview(aiNavButton("Translate", action: "translate", highlighted: false))
-        aiNavStack.addArrangedSubview(aiNavButton("🎙 Dictate", action: "dictate", highlighted: false))
+        waveView.translatesAutoresizingMaskIntoConstraints = false
+        waveView.heightAnchor.constraint(equalToConstant: 78).isActive = true
+        waveView.widthAnchor.constraint(equalToConstant: 118).isActive = true
+        voiceStack.addArrangedSubview(waveView)
+
+        micButton.setTitle("🎙", for: .normal)
+        micButton.titleLabel?.font = .systemFont(ofSize: 42)
+        micButton.backgroundColor = blue
+        micButton.layer.cornerRadius = 36
+        micButton.layer.shadowColor = blue.cgColor
+        micButton.layer.shadowOpacity = 0.45
+        micButton.layer.shadowRadius = 14
+        micButton.layer.shadowOffset = CGSize(width: 0, height: 6)
+        micButton.widthAnchor.constraint(equalToConstant: 72).isActive = true
+        micButton.heightAnchor.constraint(equalToConstant: 72).isActive = true
+        micButton.addTarget(self, action: #selector(handleMicTapped), for: .touchUpInside)
+        voiceStack.addArrangedSubview(micButton)
+
+        transcriptLabel.textAlignment = .center
+        transcriptLabel.numberOfLines = 2
+        transcriptLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        transcriptLabel.textColor = UIColor.white.withAlphaComponent(0.90)
+        voiceStack.addArrangedSubview(transcriptLabel)
+
+        previewLabel.numberOfLines = 3
+        previewLabel.font = .systemFont(ofSize: 14, weight: .regular)
+        previewLabel.textColor = .white
+        previewLabel.backgroundColor = cardLight
+        previewLabel.layer.cornerRadius = 16
+        previewLabel.layer.masksToBounds = true
+        rootStack.addArrangedSubview(padded(previewLabel, inset: 12, background: cardLight, cornerRadius: 16, minHeight: 62))
+
+        let actionRow = UIStackView()
+        actionRow.axis = .horizontal
+        actionRow.spacing = 8
+        actionRow.distribution = .fillEqually
+        actionRow.addArrangedSubview(pillButton("Regenerate", action: #selector(handleRegenerate), filled: false))
+        actionRow.addArrangedSubview(pillButton("Insert", action: #selector(handleInsert), filled: true))
+        rootStack.addArrangedSubview(actionRow)
     }
 
-    private func rebuildKeyRows() {
-        keyRowsStack.arrangedSubviews.forEach { row in
-            keyRowsStack.removeArrangedSubview(row)
-            row.removeFromSuperview()
+    private func rebuildModeButtons() {
+        modeStack.arrangedSubviews.forEach { view in
+            modeStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
         }
-
-        switch keyboardPage {
-        case .letters:
-            addLetterRow(Array("qwertyuiop").map(String.init), horizontalInset: 0)
-            addLetterRow(Array("asdfghjkl").map(String.init), horizontalInset: 18)
-            addLetterRowWithSpecials(Array("zxcvbnm").map(String.init))
-            addBottomRow(leftTitle: "123")
-        case .numbers:
-            addLetterRow(["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"], horizontalInset: 0)
-            addLetterRow(["-", "/", ":", ";", "(", ")", "$", "&", "@", "\""], horizontalInset: 0)
-            addLetterRowWithSpecials([".", ",", "?", "!", "'"], leftTitle: "#+=", leftAction: "symbols")
-            addBottomRow(leftTitle: "ABC")
+        for mode in [MawaMode.dictate, .reply, .rewrite, .prompt] {
+            let button = UIButton(type: .system)
+            button.setTitle(mode.shortLabel, for: .normal)
+            button.setTitleColor(mode == selectedMode ? .white : UIColor.white.withAlphaComponent(0.72), for: .normal)
+            button.titleLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
+            button.backgroundColor = mode == selectedMode ? violet : cardLight
+            button.layer.cornerRadius = 14
+            button.tag = [MawaMode.dictate, .reply, .rewrite, .prompt].firstIndex(of: mode) ?? 0
+            button.contentEdgeInsets = UIEdgeInsets(top: 8, left: 6, bottom: 8, right: 6)
+            button.addTarget(self, action: #selector(handleMode(_:)), for: .touchUpInside)
+            modeStack.addArrangedSubview(button)
         }
     }
 
-    private func addLetterRow(_ letters: [String], horizontalInset: CGFloat) {
-        let wrapper = UIStackView()
-        wrapper.axis = .horizontal
-        wrapper.spacing = 0
-        wrapper.alignment = .fill
-
-        if horizontalInset > 0 { wrapper.addArrangedSubview(fixedSpacer(width: horizontalInset)) }
-
-        let row = UIStackView()
-        row.axis = .horizontal
-        row.spacing = 5
-        row.distribution = .fillEqually
-        for letter in letters {
-            let value = keyboardPage == .letters && isShiftEnabled ? letter.uppercased() : letter
-            row.addArrangedSubview(keyButton(value, value: value))
-        }
-        wrapper.addArrangedSubview(row)
-
-        if horizontalInset > 0 { wrapper.addArrangedSubview(fixedSpacer(width: horizontalInset)) }
-        keyRowsStack.addArrangedSubview(wrapper)
-    }
-
-    private func addLetterRowWithSpecials(_ letters: [String], leftTitle: String? = nil, leftAction: String = "shift") {
-        let row = UIStackView()
-        row.axis = .horizontal
-        row.spacing = 5
-        row.alignment = .fill
-
-        let left = keyButton(leftTitle ?? (isShiftEnabled ? "⇧" : "⇧"), specialAction: leftAction, isSpecial: true)
-        left.widthAnchor.constraint(equalToConstant: 43).isActive = true
-        row.addArrangedSubview(left)
-
-        let middle = UIStackView()
-        middle.axis = .horizontal
-        middle.spacing = 5
-        middle.distribution = .fillEqually
-        for letter in letters {
-            let value = keyboardPage == .letters && isShiftEnabled ? letter.uppercased() : letter
-            middle.addArrangedSubview(keyButton(value, value: value))
-        }
-        row.addArrangedSubview(middle)
-
-        let delete = keyButton("⌫", specialAction: "delete", isSpecial: true)
-        delete.widthAnchor.constraint(equalToConstant: 43).isActive = true
-        row.addArrangedSubview(delete)
-
-        keyRowsStack.addArrangedSubview(row)
-    }
-
-    private func addBottomRow(leftTitle: String) {
-        let row = UIStackView()
-        row.axis = .horizontal
-        row.spacing = 5
-        row.alignment = .fill
-
-        let page = keyButton(leftTitle, specialAction: "page", isSpecial: true)
-        page.widthAnchor.constraint(equalToConstant: 48).isActive = true
-        row.addArrangedSubview(page)
-
-        let globe = keyButton("🌐", specialAction: "globe", isSpecial: true)
-        globe.widthAnchor.constraint(equalToConstant: 40).isActive = true
-        row.addArrangedSubview(globe)
-
-        let space = keyButton("space", specialAction: "space", isSpecial: false)
-        space.titleLabel?.font = .systemFont(ofSize: 16, weight: .regular)
-        row.addArrangedSubview(space)
-
-        let returnKey = keyButton("return", specialAction: "return", isSpecial: true)
-        returnKey.titleLabel?.font = .systemFont(ofSize: 15, weight: .regular)
-        returnKey.widthAnchor.constraint(equalToConstant: 78).isActive = true
-        row.addArrangedSubview(returnKey)
-
-        keyRowsStack.addArrangedSubview(row)
-    }
-
-    private func aiNavButton(_ title: String, action: String, highlighted: Bool) -> MawaKeyButton {
-        let button = MawaKeyButton(type: .system)
-        button.specialAction = action
+    private func roundIconButton(_ title: String, action: Selector) -> UIButton {
+        let button = UIButton(type: .system)
         button.setTitle(title, for: .normal)
-        button.setTitleColor(highlighted ? .white : .label, for: .normal)
-        button.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
-        button.backgroundColor = highlighted ? aiBlue : UIColor.white.withAlphaComponent(0.86)
-        button.layer.cornerRadius = 15
-        button.layer.shadowColor = UIColor.black.cgColor
-        button.layer.shadowOpacity = highlighted ? 0.12 : 0.08
-        button.layer.shadowRadius = 1
-        button.layer.shadowOffset = CGSize(width: 0, height: 1)
-        button.contentEdgeInsets = UIEdgeInsets(top: 8, left: 13, bottom: 8, right: 13)
-        button.heightAnchor.constraint(equalToConstant: 32).isActive = true
-        button.addTarget(self, action: #selector(handleButton(_:)), for: .touchUpInside)
+        button.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
+        button.backgroundColor = cardLight
+        button.layer.cornerRadius = 16
+        button.addTarget(self, action: action, for: .touchUpInside)
         return button
     }
 
-    private func keyButton(_ title: String, value: String = "", specialAction: String = "", isSpecial: Bool = false) -> MawaKeyButton {
-        let button = MawaKeyButton(type: .system)
-        button.keyValue = value
-        button.specialAction = specialAction
+    private func pillButton(_ title: String, action: Selector, filled: Bool) -> UIButton {
+        let button = UIButton(type: .system)
         button.setTitle(title, for: .normal)
-        button.setTitleColor(keyText, for: .normal)
-        button.titleLabel?.font = .systemFont(ofSize: 21, weight: .regular)
-        button.titleLabel?.adjustsFontSizeToFitWidth = true
-        button.backgroundColor = isSpecial ? specialKeyBackground : keyBackground
-        button.layer.cornerRadius = 5
-        button.layer.shadowColor = UIColor.black.cgColor
-        button.layer.shadowOpacity = 0.20
-        button.layer.shadowRadius = 0
-        button.layer.shadowOffset = CGSize(width: 0, height: 1)
-        button.heightAnchor.constraint(equalToConstant: 43).isActive = true
-        button.addTarget(self, action: #selector(handleButton(_:)), for: .touchUpInside)
+        button.setTitleColor(filled ? .white : UIColor.white.withAlphaComponent(0.86), for: .normal)
+        button.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
+        button.backgroundColor = filled ? blue : cardLight
+        button.layer.cornerRadius = 17
+        button.contentEdgeInsets = UIEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
+        button.addTarget(self, action: action, for: .touchUpInside)
         return button
     }
 
-    private func fixedSpacer(width: CGFloat) -> UIView {
-        let spacer = UIView()
-        spacer.translatesAutoresizingMaskIntoConstraints = false
-        spacer.widthAnchor.constraint(equalToConstant: width).isActive = true
-        return spacer
+    private func padded(_ label: UILabel, inset: CGFloat, background: UIColor, cornerRadius: CGFloat, minHeight: CGFloat) -> UIView {
+        let container = UIView()
+        container.backgroundColor = background
+        container.layer.cornerRadius = cornerRadius
+        label.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: inset),
+            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -inset),
+            label.topAnchor.constraint(equalTo: container.topAnchor, constant: inset),
+            label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -inset),
+            container.heightAnchor.constraint(greaterThanOrEqualToConstant: minHeight)
+        ])
+        return container
     }
 
-    @objc private func handleButton(_ sender: MawaKeyButton) {
-        switch sender.specialAction {
-        case "delete":
-            textDocumentProxy.deleteBackward()
-            if !typedBuffer.isEmpty { typedBuffer.removeLast() }
-        case "shift":
-            isShiftEnabled.toggle()
-            rebuildKeyRows()
-        case "page", "symbols":
-            keyboardPage = keyboardPage == .letters ? .numbers : .letters
-            rebuildKeyRows()
-        case "space":
-            insertText(" ")
-        case "return":
-            insertText("\n")
-        case "globe":
-            advanceToNextInputMode()
-        case "tone":
-            toneIndex = (toneIndex + 1) % tones.count
-            toneButton?.setTitle("Tone: \(tones[toneIndex])", for: .normal)
-            MawaDiagnostics.send(event: "keyboard_tone_changed", source: "keyboard", details: ["tone": tones[toneIndex]])
-        case "rewrite":
-            performAI(mode: .rewrite, event: "keyboard_ai_rewrite_tapped")
-        case "reply":
-            performAI(mode: .reply, event: "keyboard_ai_reply_tapped")
-        case "prompt":
-            performAI(mode: .prompt, event: "keyboard_ai_prompt_tapped")
-        case "translate":
-            insertOrReplaceWithAIText("Translate mode is coming next. For now, rewrite or prompt mode is ready.", event: "keyboard_ai_translate_tapped")
-        case "dictate":
-            insertOrReplaceWithAIText("Voice dictation is coming next — the native keyboard layout is active now.", event: "keyboard_ai_dictate_tapped")
-        default:
-            if !sender.keyValue.isEmpty {
-                insertText(sender.keyValue)
-                if isShiftEnabled && keyboardPage == .letters {
-                    isShiftEnabled = false
-                    rebuildKeyRows()
-                }
+    private func updateState(_ state: VoiceState) {
+        voiceState = state
+        switch state {
+        case .idle:
+            waveView.stop()
+            statusLabel.text = "Tap mic to start dictation"
+            transcriptLabel.text = "Ready when you are"
+            previewLabel.text = "Speak naturally. Mawa will turn it into clean text, a reply, a rewrite, or a prompt."
+            micButton.backgroundColor = blue
+            micButton.transform = .identity
+        case .listening:
+            waveView.start()
+            statusLabel.text = "Listening… tap again to finish"
+            transcriptLabel.text = "Listening to your voice…"
+            previewLabel.text = "Waveform active — real speech capture is next. This build previews the mic-first flow."
+            micButton.backgroundColor = violet
+            UIView.animate(withDuration: 0.28, delay: 0, options: [.autoreverse, .repeat, .allowUserInteraction]) {
+                self.micButton.transform = CGAffineTransform(scaleX: 1.08, y: 1.08)
             }
+        case .ready:
+            waveView.stop()
+            micButton.layer.removeAllAnimations()
+            micButton.transform = .identity
+            micButton.backgroundColor = blue
+            statusLabel.text = "Draft ready"
+            transcriptLabel.text = "Preview generated"
+            previewLabel.text = generatedText
         }
     }
 
-    private func insertText(_ text: String) {
-        textDocumentProxy.insertText(text)
-        typedBuffer += text
-        if typedBuffer.count > 700 {
-            typedBuffer = String(typedBuffer.suffix(700))
-        }
+    private func generateVoicePreview() {
+        let source = sourceTextForPreview()
+        let result = MawaFlowEngine.generate(draft: source, requestedMode: selectedMode, variant: variant)
+        generatedText = result.output
+        variant += 1
+        MawaDiagnostics.send(event: "keyboard_voice_preview_generated", source: "keyboard", details: ["mode": selectedMode.rawValue])
     }
 
-    private func performAI(mode: MawaMode, event: String) {
-        let source = sourceTextForAI()
-        let result = MawaFlowEngine.generate(draft: source, requestedMode: mode)
-        insertOrReplaceWithAIText(applySelectedTone(to: result.output), event: event)
-    }
-
-    private func insertOrReplaceWithAIText(_ text: String, event: String) {
-        MawaDiagnostics.send(event: event, source: "keyboard", details: ["tone": tones[toneIndex]])
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
-        if !typedBuffer.isEmpty {
-            for _ in typedBuffer { textDocumentProxy.deleteBackward() }
-        }
-        textDocumentProxy.insertText(trimmed)
-        typedBuffer = trimmed
-    }
-
-    private func sourceTextForAI() -> String {
-        let local = typedBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !local.isEmpty { return local }
+    private func sourceTextForPreview() -> String {
         if let before = textDocumentProxy.documentContextBeforeInput?.trimmingCharacters(in: .whitespacesAndNewlines), !before.isEmpty {
             return String(before.suffix(240))
         }
-        return MawaFlowEngine.defaultDraft
+        switch selectedMode {
+        case .dictate:
+            return "um tell the team I am checking the bug and I will send an update tonight"
+        case .reply:
+            return "reply saying I checked it and it is probably missing an API key but make it professional"
+        case .rewrite:
+            return "rewrite this to sound warmer: I need this done today or the project will slip"
+        case .prompt:
+            return "make a prompt for Cursor to build a mobile first landing page for a voice keyboard app"
+        default:
+            return MawaFlowEngine.defaultDraft
+        }
     }
 
-    private func applySelectedTone(to text: String) -> String {
-        switch tones[toneIndex] {
-        case "Polite":
-            return text.hasPrefix("Please") ? text : "Please " + text.prefix(1).lowercased() + String(text.dropFirst())
-        case "Formal":
-            return text.replacingOccurrences(of: "Hey — ", with: "Hello, ")
-        case "Funny":
-            return text + " 😄"
-        default:
-            return text
+    @objc private func handleMicTapped() {
+        switch voiceState {
+        case .idle, .ready:
+            MawaDiagnostics.send(event: "keyboard_mic_started", source: "keyboard", details: ["mode": selectedMode.rawValue])
+            updateState(.listening)
+        case .listening:
+            MawaDiagnostics.send(event: "keyboard_mic_finished", source: "keyboard", details: ["mode": selectedMode.rawValue])
+            generateVoicePreview()
+            updateState(.ready)
         }
+    }
+
+    @objc private func handleMode(_ sender: UIButton) {
+        let allModes: [MawaMode] = [.dictate, .reply, .rewrite, .prompt]
+        selectedMode = allModes[sender.tag]
+        rebuildModeButtons()
+        if voiceState == .ready {
+            generateVoicePreview()
+            updateState(.ready)
+        }
+    }
+
+    @objc private func handleInsert() {
+        if generatedText.isEmpty { generateVoicePreview() }
+        MawaDiagnostics.send(event: "keyboard_voice_insert_tapped", source: "keyboard", details: ["mode": selectedMode.rawValue])
+        textDocumentProxy.insertText(generatedText)
+        updateState(.idle)
+    }
+
+    @objc private func handleRegenerate() {
+        generateVoicePreview()
+        updateState(.ready)
+    }
+
+    @objc private func handleClear() {
+        generatedText = ""
+        updateState(.idle)
+    }
+
+    @objc private func handleNextKeyboard() {
+        advanceToNextInputMode()
     }
 }
