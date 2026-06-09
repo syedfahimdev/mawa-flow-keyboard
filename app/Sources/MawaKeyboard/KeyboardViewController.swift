@@ -229,6 +229,7 @@ final class KeyboardViewController: UIInputViewController {
         actionRow.spacing = 8
         actionRow.distribution = .fillEqually
         actionRow.addArrangedSubview(pillButton("Regenerate", action: #selector(handleRegenerate), filled: false))
+        actionRow.addArrangedSubview(pillButton("Open App", action: #selector(handleOpenApp), filled: false))
         actionRow.addArrangedSubview(pillButton("Insert", action: #selector(handleInsert), filled: true))
         rootStack.addArrangedSubview(actionRow)
     }
@@ -357,6 +358,14 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func startRecording() {
+        guard hasFullAccess else {
+            MawaDiagnosticsSendMicError("full_access_disabled")
+            statusLabel.text = "Full Access required"
+            transcriptLabel.text = "Enable Full Access first"
+            previewLabel.text = "Go to Settings → General → Keyboard → Keyboards → Mawa Flow Keyboard → Allow Full Access. Then reopen this keyboard."
+            return
+        }
+
         AVAudioSession.sharedInstance().requestRecordPermission { [weak self] allowed in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -388,7 +397,9 @@ final class KeyboardViewController: UIInputViewController {
                         self.updateState(.listening)
                     } else {
                         self.MawaDiagnosticsSendMicError("record_returned_false")
-                        self.previewLabel.text = "iOS did not start recording from the keyboard extension."
+                        self.statusLabel.text = "Keyboard mic blocked"
+                        self.transcriptLabel.text = "iOS did not start recording"
+                        self.previewLabel.text = "Full Access is on and mic permission is allowed, but iOS still refused recording from the keyboard extension. Use Open App → Voice Test while we build the host-app handoff."
                     }
                 } catch {
                     self.MawaDiagnosticsSendMicError(error.localizedDescription)
@@ -480,6 +491,12 @@ final class KeyboardViewController: UIInputViewController {
     @objc private func handleClear() {
         generatedText = ""
         updateState(.idle)
+    }
+
+    @objc private func handleOpenApp() {
+        MawaDiagnostics.send(event: "keyboard_open_app_tapped", source: "keyboard")
+        guard let url = URL(string: "mawaflow://voice-test") else { return }
+        extensionContext?.open(url)
     }
 
     @objc private func handleNextKeyboard() {
