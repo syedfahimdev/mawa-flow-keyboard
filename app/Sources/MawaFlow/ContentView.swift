@@ -3,7 +3,23 @@ import SwiftUI
 import UIKit
 
 struct ContentView: View {
+    @AppStorage("mawaSetupComplete") private var setupComplete = false
+
     var body: some View {
+        Group {
+            if setupComplete {
+                mainTabs
+            } else {
+                SetupView()
+            }
+        }
+        .tint(.mawaTeal)
+        .onAppear {
+            MawaDiagnostics.send(event: "host_app_opened", source: "host")
+        }
+    }
+
+    private var mainTabs: some View {
         TabView {
             SetupView()
                 .tabItem { Label("Setup", systemImage: "checklist") }
@@ -16,10 +32,6 @@ struct ContentView: View {
             PrivacyView()
                 .tabItem { Label("Privacy", systemImage: "lock.shield") }
         }
-        .tint(.mawaTeal)
-        .onAppear {
-            MawaDiagnostics.send(event: "host_app_opened", source: "host")
-        }
     }
 }
 
@@ -27,6 +39,7 @@ private struct SetupView: View {
     @AppStorage("mawaProvider") private var provider = "Mawa Cloud"
     @AppStorage("mawaBYOKey") private var byoKey = ""
     @AppStorage("mawaLocalMode") private var localMode = false
+    @AppStorage("mawaSetupComplete") private var setupComplete = false
     @State private var micStatus = "Not checked"
     @State private var setupEvent = ""
 
@@ -99,7 +112,8 @@ private struct SetupView: View {
                             source: "host",
                             details: ["provider": provider, "localMode": String(localMode), "hasBYOKey": String(!byoKey.isEmpty)]
                         )
-                        setupEvent = "Setup saved. Now switch to the keyboard in Notes."
+                        setupComplete = true
+                        setupEvent = "Setup saved. Now test voice recording or switch to the keyboard in Notes."
                     } label: {
                         Label("I’m Ready to Use Mawa Keyboard", systemImage: "checkmark.circle.fill")
                             .frame(maxWidth: .infinity)
