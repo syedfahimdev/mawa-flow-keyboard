@@ -1,3 +1,4 @@
+import AVFoundation
 import UIKit
 
 private final class WaveBarView: UIView {
@@ -64,6 +65,7 @@ final class KeyboardViewController: UIInputViewController {
     private enum VoiceState {
         case idle
         case listening
+        case processing
         case ready
     }
 
@@ -71,6 +73,9 @@ final class KeyboardViewController: UIInputViewController {
     private var selectedMode: MawaMode = .dictate
     private var variant = 0
     private var generatedText = ""
+    private var currentTranscript = ""
+    private var audioRecorder: AVAudioRecorder?
+    private var recordingURL: URL?
 
     private let rootStack = UIStackView()
     private let modeStack = UIStackView()
@@ -290,33 +295,43 @@ final class KeyboardViewController: UIInputViewController {
         switch state {
         case .idle:
             waveView.stop()
+            micButton.layer.removeAllAnimations()
             statusLabel.text = "Tap mic to start dictation"
             transcriptLabel.text = "Ready when you are"
-            previewLabel.text = "Speak naturally. Mawa will turn it into clean text, a reply, a rewrite, or a prompt."
+            previewLabel.text = "Speak naturally. Mawa will record, transcribe, clean it up, then insert it here."
             micButton.backgroundColor = blue
             micButton.transform = .identity
         case .listening:
             waveView.start()
             statusLabel.text = "Listening… tap again to finish"
-            transcriptLabel.text = "Listening to your voice…"
-            previewLabel.text = "Waveform active — real speech capture is next. This build previews the mic-first flow."
+            transcriptLabel.text = "Recording from microphone…"
+            previewLabel.text = "Speak your thought. Mawa will send this short audio clip to the VPS for Deepgram transcription."
             micButton.backgroundColor = violet
             UIView.animate(withDuration: 0.28, delay: 0, options: [.autoreverse, .repeat, .allowUserInteraction]) {
                 self.micButton.transform = CGAffineTransform(scaleX: 1.08, y: 1.08)
             }
+        case .processing:
+            waveView.start()
+            micButton.layer.removeAllAnimations()
+            micButton.transform = .identity
+            micButton.backgroundColor = violet
+            statusLabel.text = "Transcribing…"
+            transcriptLabel.text = "Processing your voice"
+            previewLabel.text = "Sending audio to Mawa STT backend…"
         case .ready:
             waveView.stop()
             micButton.layer.removeAllAnimations()
             micButton.transform = .identity
             micButton.backgroundColor = blue
             statusLabel.text = "Draft ready"
-            transcriptLabel.text = "Preview generated"
+            transcriptLabel.text = currentTranscript.isEmpty ? "Preview generated" : currentTranscript
             previewLabel.text = generatedText
         }
     }
 
-    private func generateVoicePreview() {
-        let source = sourceTextForPreview()
+    private func generateVoicePreview(from transcript: String? = nil) {
+        let source = transcript?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? transcript! : sourceTextForPreview()
+        currentTranscript = source
         let result = MawaFlowEngine.generate(draft: source, requestedMode: selectedMode, variant: variant)
         generatedText = result.output
         variant += 1
@@ -341,15 +356,102 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
+    private func startRecording() {
+        AVAudioSession.sharedInstance().requestRecordPermission { [weak self] allowed in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard allowed else {
+                    self.MawaDiagnosticsSendMicError("permission_denied")
+                    self.statusLabel.text = "Mic permission denied"
+                    self.previewLabel.text = "Open the main Mawa app and allow microphone permission, then try again."
+                    return
+                }
+                do {
+                    let session = AVAudioSession.sharedInstance()
+                    try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.duckOthers])
+                    try session.setActive(true)
+
+                    let url = FileManager.default.temporaryDirectory.appendingPathComponent("mawa-voice-\(UUID().uuidString).m4a")
+                    let settings: [String: Any] = [
+                        AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                        AVSampleRateKey: 16_000,
+                        AVNumberOfChannelsKey: 1,
+                        AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+                    ]
+                    let recorder = try AVAudioRecorder(url: url, settings: settings)
+                    recorder.isMeteringEnabled = true
+                    recorder.prepareToRecord()
+                    if recorder.record() {
+                        self.recordingURL = url
+                        self.audioRecorder = recorder
+                        MawaDiagnostics.send(event: "keyboard_recording_started", source: "keyboard", details: ["mode": self.selectedMode.rawValue])
+                        self.updateState(.listening)
+                    } else {
+                        self.MawaDiagnosticsSendMicError("record_returned_false")
+                        self.previewLabel.text = "iOS did not start recording from the keyboard extension."
+                    }
+                } catch {
+                    self.MawaDiagnosticsSendMicError(error.localizedDescription)
+                    self.statusLabel.text = "Mic failed"
+                    self.previewLabel.text = "Recording failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func stopRecordingAndTranscribe() {
+        audioRecorder?.stop()
+        audioRecorder = nil
+        MawaDiagnostics.send(event: "keyboard_recording_finished", source: "keyboard", details: ["mode": selectedMode.rawValue])
+        updateState(.processing)
+
+        guard let recordingURL else {
+            generatedText = "No audio recording was found. Try again."
+            updateState(.ready)
+            return
+        }
+
+        MawaDiagnostics.transcribeAudio(fileURL: recordingURL, mode: selectedMode.rawValue) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                try? FileManager.default.removeItem(at: recordingURL)
+                self.recordingURL = nil
+                switch result {
+                case .success(let transcript):
+                    let cleaned = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if cleaned.isEmpty {
+                        self.currentTranscript = ""
+                        self.generatedText = "I couldn’t detect speech. Try again a little closer to the mic."
+                        MawaDiagnostics.send(event: "keyboard_transcription_empty", source: "keyboard", details: ["mode": self.selectedMode.rawValue])
+                    } else {
+                        self.generateVoicePreview(from: cleaned)
+                        MawaDiagnostics.send(event: "keyboard_transcription_success", source: "keyboard", details: ["mode": self.selectedMode.rawValue, "chars": String(cleaned.count)])
+                    }
+                    self.updateState(.ready)
+                case .failure(let error):
+                    self.currentTranscript = ""
+                    self.generatedText = "Transcription failed: \(error.localizedDescription)"
+                    MawaDiagnostics.send(event: "keyboard_transcription_failed", source: "keyboard", details: ["mode": self.selectedMode.rawValue, "error": error.localizedDescription])
+                    self.updateState(.ready)
+                }
+            }
+        }
+    }
+
+    private func MawaDiagnosticsSendMicError(_ error: String) {
+        MawaDiagnostics.send(event: "keyboard_recording_failed", source: "keyboard", details: ["mode": selectedMode.rawValue, "error": error])
+    }
+
     @objc private func handleMicTapped() {
         switch voiceState {
         case .idle, .ready:
             MawaDiagnostics.send(event: "keyboard_mic_started", source: "keyboard", details: ["mode": selectedMode.rawValue])
-            updateState(.listening)
+            startRecording()
         case .listening:
             MawaDiagnostics.send(event: "keyboard_mic_finished", source: "keyboard", details: ["mode": selectedMode.rawValue])
-            generateVoicePreview()
-            updateState(.ready)
+            stopRecordingAndTranscribe()
+        case .processing:
+            break
         }
     }
 

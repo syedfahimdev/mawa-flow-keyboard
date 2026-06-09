@@ -25,6 +25,8 @@
         <key>NSAllowsArbitraryLoads</key>
         <true/>
     </dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Mawa uses the microphone when you tap the mic button to turn your speech into text.</string>
     <key>NSExtension</key>
     <dict>
         <key>NSExtensionAttributes</key>
