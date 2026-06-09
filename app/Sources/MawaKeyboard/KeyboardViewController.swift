@@ -557,8 +557,14 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     @objc private func handleInsert() {
+        let clipboardText = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if generatedText.isEmpty && !clipboardText.isEmpty {
+            generatedText = clipboardText
+            currentTranscript = "Copied from Mawa app"
+            MawaDiagnostics.send(event: "keyboard_clipboard_output_loaded", source: "keyboard", details: ["chars": String(clipboardText.count)])
+        }
         if generatedText.isEmpty { generateVoicePreview() }
-        MawaDiagnostics.send(event: "keyboard_voice_insert_tapped", source: "keyboard", details: ["mode": selectedMode.rawValue])
+        MawaDiagnostics.send(event: "keyboard_voice_insert_tapped", source: "keyboard", details: ["mode": selectedMode.rawValue, "chars": String(generatedText.count)])
         textDocumentProxy.insertText(generatedText)
         updateState(.idle)
     }

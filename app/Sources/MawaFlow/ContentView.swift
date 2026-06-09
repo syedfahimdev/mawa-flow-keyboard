@@ -3,7 +3,16 @@ import SwiftUI
 import UIKit
 
 struct ContentView: View {
+    private enum AppTab: Hashable {
+        case setup
+        case voiceTest
+        case demo
+        case diagnostics
+        case privacy
+    }
+
     @AppStorage("mawaSetupComplete") private var setupComplete = false
+    @State private var selectedTab: AppTab = .setup
 
     var body: some View {
         Group {
@@ -17,20 +26,37 @@ struct ContentView: View {
         .onAppear {
             MawaDiagnostics.send(event: "host_app_opened", source: "host")
         }
+        .onOpenURL { url in
+            handleDeepLink(url)
+        }
     }
 
     private var mainTabs: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             SetupView()
                 .tabItem { Label("Setup", systemImage: "checklist") }
+                .tag(AppTab.setup)
             HostVoiceTestView()
                 .tabItem { Label("Voice Test", systemImage: "mic.circle") }
+                .tag(AppTab.voiceTest)
             DemoLabView()
                 .tabItem { Label("Demo", systemImage: "waveform") }
+                .tag(AppTab.demo)
             DiagnosticsView()
                 .tabItem { Label("Diagnostics", systemImage: "stethoscope") }
+                .tag(AppTab.diagnostics)
             PrivacyView()
                 .tabItem { Label("Privacy", systemImage: "lock.shield") }
+                .tag(AppTab.privacy)
+        }
+    }
+
+    private func handleDeepLink(_ url: URL) {
+        MawaDiagnostics.send(event: "host_deep_link_opened", source: "host", details: ["url": url.absoluteString])
+        guard url.scheme == "mawaflow" else { return }
+        if url.host == "voice-test" || url.path.contains("voice-test") {
+            setupComplete = true
+            selectedTab = .voiceTest
         }
     }
 }
@@ -316,9 +342,10 @@ private final class HostVoiceRecorder: NSObject, ObservableObject {
                         self.output = "Try again closer to the microphone."
                     } else {
                         self.output = MawaFlowEngine.generate(draft: cleaned, requestedMode: self.selectedMode).output
+                        UIPasteboard.general.string = self.output
                     }
-                    self.state = "Done"
-                    MawaDiagnostics.send(event: "host_voice_test_transcription_success", source: "host", details: ["chars": String(cleaned.count), "mode": self.selectedMode.rawValue])
+                    self.state = cleaned.isEmpty ? "Done" : "Done — output copied"
+                    MawaDiagnostics.send(event: "host_voice_test_transcription_success", source: "host", details: ["chars": String(cleaned.count), "mode": self.selectedMode.rawValue, "copied": String(!cleaned.isEmpty)])
                 case .failure(let error):
                     self.state = "Transcription failed"
                     self.output = error.localizedDescription
@@ -338,7 +365,7 @@ private struct HostVoiceTestView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     SectionCard(title: "Voice recording test", icon: "mic.circle.fill") {
-                        Text("This records from the main app, not the keyboard extension. If this works but keyboard mic does not, iOS is blocking direct keyboard recording and we’ll use a handoff/fallback path.")
+                        Text("This records from the main app, not the keyboard extension. Direct keyboard mic capture is blocked on this device, so this is the reliable handoff path: record here, Mawa auto-copies the output, then return to the original app and tap Insert on the Mawa keyboard.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                         Picker("Mode", selection: $recorder.selectedMode) {
